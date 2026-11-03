@@ -1,0 +1,24 @@
+# Standing pose: the firmware gait's neutral stance (hexa_kin neutral_foot), every leg
+# alike. joint_state_publisher holds these for source:=stand. test_urdf_fk.py checks that
+# they put each foot on neutral_foot; recompute them when the geometry changes.
+joint_state_publisher:
+  ros__parameters:
+    zeros:
+      rf_coxa: 0.0
+      rf_femur: 0.297447
+      rf_tibia: -1.772154
+      rm_coxa: 0.0
+      rm_femur: 0.297447
+      rm_tibia: -1.772154
+      rr_coxa: 0.0
+      rr_femur: 0.297447
+      rr_tibia: -1.772154
+      lr_coxa: 0.0
+      lr_femur: 0.297447
+      lr_tibia: -1.772154
+      lm_coxa: 0.0
+      lm_femur: 0.297447
+      lm_tibia: -1.772154
+      lf_coxa: 0.0
+      lf_femur: 0.297447
+      lf_tibia: -1.772154

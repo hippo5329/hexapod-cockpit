@@ -1,0 +1,126 @@
+<?xml version="1.0"?>
+<!--
+  Hiwonder miniHexa. Kinematics identical to firmware/lib/hexa_kin (test/test_urdf_fk.py
+  checks the foot positions against it at random joint angles):
+
+    base_link at the body centre, at hip height; x forward, y left, z up.
+    <leg>_coxa  revolute about +z at the hip, frame turned to the leg's mount direction
+    <leg>_femur revolute about -y (positive lifts the knee), coxa length out
+    <leg>_tibia revolute about -y (0 = in line with the femur, negative folds down), femur length out
+    <leg>_foot  fixed, tibia length out
+
+  Every length is a PLACEHOLDER until measured on the robot (docs/hardware-minihexa.md,
+  open question 6); change it here and in hexa_kin.cpp together, the test fails otherwise.
+-->
+<robot name="minihexa" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:property name="coxa_len" value="0.030"/>
+  <xacro:property name="femur_len" value="0.050"/>
+  <xacro:property name="tibia_len" value="0.075"/>
+  <xacro:property name="hip_x" value="0.060"/>
+  <xacro:property name="hip_y_corner" value="0.040"/>
+  <xacro:property name="hip_y_mid" value="0.055"/>
+  <xacro:property name="stand_z" value="-0.060"/>
+  <xacro:property name="link_r" value="0.006"/>
+
+  <material name="body"><color rgba="0.20 0.22 0.25 1"/></material>
+  <material name="coxa"><color rgba="0.85 0.45 0.10 1"/></material>
+  <material name="femur"><color rgba="0.75 0.75 0.78 1"/></material>
+  <material name="tibia"><color rgba="0.30 0.55 0.85 1"/></material>
+  <material name="foot"><color rgba="0.10 0.10 0.10 1"/></material>
+
+  <!-- Ground projection of the body centre while standing, for later nav frames. -->
+  <link name="base_footprint"/>
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${-stand_z}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_link">
+    <visual>
+      <geometry><box size="0.150 0.120 0.025"/></geometry>
+      <material name="body"/>
+    </visual>
+    <collision>
+      <geometry><box size="0.150 0.120 0.025"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.25"/>
+      <inertia ixx="3.1e-4" iyy="4.8e-4" izz="7.7e-4" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- A link drawn as a cylinder along its own +x, `bar_len` long. -->
+  <xacro:macro name="bar" params="name bar_len mat mass">
+    <link name="${name}">
+      <visual>
+        <origin xyz="${bar_len/2} 0 0" rpy="0 ${pi/2} 0"/>
+        <geometry><cylinder radius="${link_r}" length="${bar_len}"/></geometry>
+        <material name="${mat}"/>
+      </visual>
+      <collision>
+        <origin xyz="${bar_len/2} 0 0" rpy="0 ${pi/2} 0"/>
+        <geometry><cylinder radius="${link_r}" length="${bar_len}"/></geometry>
+      </collision>
+      <inertial>
+        <origin xyz="${bar_len/2} 0 0" rpy="0 0 0"/>
+        <mass value="${mass}"/>
+        <inertia ixx="1e-6" iyy="${mass*bar_len*bar_len/12 + 1e-6}" izz="${mass*bar_len*bar_len/12 + 1e-6}" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- Servo range: 500-2500 us = 180 degrees, centred at coxa 0, femur 0, tibia -90 deg
+       (hexa_servo default_cal). Effort and velocity: listed HPD-0127 1.8 kg.cm, 0.05 s/60 deg. -->
+  <xacro:macro name="leg" params="name x y">
+    <xacro:property name="yaw" value="${atan2(y, x)}"/>
+    <joint name="${name}_coxa" type="revolute">
+      <parent link="base_link"/>
+      <child link="${name}_coxa_link"/>
+      <origin xyz="${x} ${y} 0" rpy="0 0 ${yaw}"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="${-pi/2}" upper="${pi/2}" effort="0.18" velocity="20.9"/>
+    </joint>
+    <xacro:bar name="${name}_coxa_link" bar_len="${coxa_len}" mat="coxa" mass="0.012"/>
+
+    <joint name="${name}_femur" type="revolute">
+      <parent link="${name}_coxa_link"/>
+      <child link="${name}_femur_link"/>
+      <origin xyz="${coxa_len} 0 0" rpy="0 0 0"/>
+      <axis xyz="0 -1 0"/>
+      <limit lower="${-pi/2}" upper="${pi/2}" effort="0.18" velocity="20.9"/>
+    </joint>
+    <xacro:bar name="${name}_femur_link" bar_len="${femur_len}" mat="femur" mass="0.015"/>
+
+    <joint name="${name}_tibia" type="revolute">
+      <parent link="${name}_femur_link"/>
+      <child link="${name}_tibia_link"/>
+      <origin xyz="${femur_len} 0 0" rpy="0 0 0"/>
+      <axis xyz="0 -1 0"/>
+      <limit lower="${-pi}" upper="0" effort="0.18" velocity="20.9"/>
+    </joint>
+    <xacro:bar name="${name}_tibia_link" bar_len="${tibia_len}" mat="tibia" mass="0.015"/>
+
+    <joint name="${name}_foot_joint" type="fixed">
+      <parent link="${name}_tibia_link"/>
+      <child link="${name}_foot"/>
+      <origin xyz="${tibia_len} 0 0" rpy="0 0 0"/>
+    </joint>
+    <link name="${name}_foot">
+      <visual>
+        <geometry><sphere radius="0.007"/></geometry>
+        <material name="foot"/>
+      </visual>
+    </link>
+  </xacro:macro>
+
+  <!-- Order and positions as hexa_kin.cpp: rf rm rr lr lm lf. -->
+  <xacro:leg name="rf" x="${hip_x}" y="${-hip_y_corner}"/>
+  <xacro:leg name="rm" x="0.0" y="${-hip_y_mid}"/>
+  <xacro:leg name="rr" x="${-hip_x}" y="${-hip_y_corner}"/>
+  <xacro:leg name="lr" x="${-hip_x}" y="${hip_y_corner}"/>
+  <xacro:leg name="lm" x="0.0" y="${hip_y_mid}"/>
+  <xacro:leg name="lf" x="${hip_x}" y="${hip_y_corner}"/>
+
+</robot>

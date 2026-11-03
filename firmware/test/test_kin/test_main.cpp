@@ -18,26 +18,41 @@ static void test_neutral_reachable() {
     }
 }
 
-// FK(IK(p)) == p over a box around every leg's neutral foot.
+// FK(IK(p)) == p over the gait's working space around every leg's neutral foot: a
+// disc of the stride limit's radius (40 mm, any direction), from the ground up to 30 mm
+// of lift. (A 40 mm square is NOT reachable: its corners are 57 mm out.)
 static void test_ik_fk_round_trip() {
     const Geometry& g = minihexa_geometry();
     int checked = 0;
     for (int leg = 0; leg < kLegs; ++leg) {
         const Vec3 n = neutral_foot(g, leg);
-        for (float dx = -0.04f; dx <= 0.0401f; dx += 0.01f)
-            for (float dy = -0.04f; dy <= 0.0401f; dy += 0.01f)
-                for (float dz = 0.0f; dz <= 0.0301f; dz += 0.01f) {
-                    const Vec3 p{n.x + dx, n.y + dy, n.z + dz};
-                    LegAngles a;
-                    TEST_ASSERT_TRUE_MESSAGE(leg_ik(g, leg, p, &a), "stride box out of reach");
-                    const Vec3 q = leg_fk(g, leg, a);
-                    TEST_ASSERT_FLOAT_WITHIN(1e-5f, p.x, q.x);
-                    TEST_ASSERT_FLOAT_WITHIN(1e-5f, p.y, q.y);
-                    TEST_ASSERT_FLOAT_WITHIN(1e-5f, p.z, q.z);
+        for (int ri = 0; ri <= 4; ++ri)
+            for (int ai = 0; ai < 16; ++ai)
+                for (int zi = 0; zi <= 3; ++zi) {
+                    const float r = 0.01f * ri, a = ai * 3.14159265f / 8;
+                    const Vec3 p{n.x + r * std::cos(a), n.y + r * std::sin(a), n.z + 0.01f * zi};
+                    LegAngles q;
+                    TEST_ASSERT_TRUE_MESSAGE(leg_ik(g, leg, p, &q), "working space out of reach");
+                    const Vec3 f = leg_fk(g, leg, q);
+                    TEST_ASSERT_FLOAT_WITHIN(1e-5f, p.x, f.x);
+                    TEST_ASSERT_FLOAT_WITHIN(1e-5f, p.y, f.y);
+                    TEST_ASSERT_FLOAT_WITHIN(1e-5f, p.z, f.z);
                     ++checked;
                 }
     }
-    TEST_ASSERT_EQUAL(6 * 9 * 9 * 4, checked);
+    TEST_ASSERT_EQUAL(6 * 5 * 16 * 4, checked);
+}
+
+// The edge of the envelope: a 40 mm square's corner that lies along the leg, 57 mm
+// outward at ground level, is past full reach (femur + tibia, 125 mm).
+static void test_square_corner_out_of_reach() {
+    const Geometry& g = minihexa_geometry();
+    const Vec3 n = neutral_foot(g, 0);
+    const float c = std::cos(g.hip[0].mount_yaw), s = std::sin(g.hip[0].mount_yaw);
+    const float out = 0.04f * 1.41421356f;
+    const Vec3 p{n.x + out * c, n.y + out * s, n.z};
+    LegAngles q;
+    TEST_ASSERT_FALSE(leg_ik(g, 0, p, &q));
 }
 
 static void test_unreachable_refused() {
@@ -74,6 +89,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_neutral_reachable);
     RUN_TEST(test_ik_fk_round_trip);
+    RUN_TEST(test_square_corner_out_of_reach);
     RUN_TEST(test_unreachable_refused);
     RUN_TEST(test_neutral_pose_shape);
     RUN_TEST(test_servo_mapping);

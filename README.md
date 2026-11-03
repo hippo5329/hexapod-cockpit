@@ -4,9 +4,16 @@ One-click from a bare hexapod controller to ROS 2: unified micro-ROS firmware, a
 SLAM and Nav2 for six-legged walkers. Sister project of
 [linorobot2-cockpit](https://github.com/hippo5329/linorobot2-cockpit), which does the same for wheeled robots.
 
-**Status: planning.** Nothing here runs yet. The first target robot is the Hiwonder **miniHexa** Standard Kit
-(18 DOF, ESP32), described in [`docs/hardware-minihexa.md`](docs/hardware-minihexa.md). The plan is in
-[`docs/architecture.md`](docs/architecture.md).
+**Status: early.** The first target robot is the Hiwonder **miniHexa** Standard Kit (18 DOF, ESP32), described in
+[`docs/hardware-minihexa.md`](docs/hardware-minihexa.md). The plan is in [`docs/architecture.md`](docs/architecture.md).
+
+What runs today, without the robot:
+- **Firmware skeleton** ([`docs/firmware.md`](docs/firmware.md)): tripod gait, leg IK and micro-ROS (`/cmd_vel` in;
+  `/joint_states` and `/odom/gait` out). It drives simulated servos until the board's pins are identified.
+- **Host simulator** ([`docs/simulation.md`](docs/simulation.md)): the same gait code walking simulated servos, with
+  true pose vs gait odometry. Run it with `make -C sim run`.
+- **Robot model** (`ros/hexapod_description`): URDF and RViz view of the miniHexa, tested against the firmware's
+  kinematics. Run it with `ros2 launch hexapod_description display.launch.py`.
 
 ## Goals
 
