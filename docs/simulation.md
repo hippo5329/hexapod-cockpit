@@ -1,7 +1,10 @@
 # Simulation
 
-Two ways to run the miniHexa without the robot. Both use the firmware's own gait, IK and servo code
-(`firmware/lib`), so what walks in simulation is what will walk on the robot.
+Three ways to run the miniHexa without the robot. All use the firmware's own gait, IK and servo code
+(`firmware/lib`), so what walks in simulation is what will walk on the robot:
+- the host simulator, scripted scenarios with a pass/fail verdict;
+- the same simulator as a ROS 2 node, driven by `/cmd_vel` like the robot;
+- the firmware itself in sim mode, on a bare ESP32.
 
 ## Host simulator (`sim/`)
 
@@ -36,6 +39,32 @@ A scenario passes when:
 
 With no slip, the true motion matches the command within about 1 mm and 1° over 0.3 m and 137°. That shows the
 IK, FK and gait are consistent with each other.
+
+The world (servos, foot contact, true pose, slip) is `sim/hexa_world`; the scenarios are `sim/hexa_sim.cpp`.
+
+## ROS 2 node (`ros/hexapod_sim`)
+
+The host simulator's world as a ROS 2 node that stands in for the firmware. No board and no agent are needed:
+
+```
+ros2 launch hexapod_sim sim.launch.py              # node + walking view in RViz
+ros2 launch hexapod_sim sim.launch.py slip:=0.10   # another floor
+```
+
+| topic | type | notes |
+|---|---|---|
+| `/cmd_vel` | `Twist` (Jazzy), `TwistStamped` (Lyrical) | as the firmware is built; parameter `cmd_vel_stamped` overrides |
+| `/joint_states` | `sensor_msgs/JointState` | the simulated servos' angles, 25 Hz, best effort |
+| `/odom/gait` | `nav_msgs/Odometry` | the gait odometry, exactly as the firmware computes it |
+| `/sim/ground_truth` | `nav_msgs/Odometry` | where the body really went (grounded feet, less slip); `odom` frame, same origin |
+
+The node steps the world at the firmware's 50 Hz frame, and the gait's 0.5 s command timeout applies.
+`sim.launch.py` includes the walking view (below), so the robot is drawn where its gait odometry says, as on the
+real robot. Two trails show the difference: orange for where it thinks it went (`/odom/gait`), green for where it
+really went (`/sim/ground_truth`).
+
+It is tested against the board: the bare-ESP32 sim-mode check passes on the node with the same numbers. Its own
+`colcon test` walks it 0.2 m and checks the ground truth against the slip, at slip 0.05 and 0.5.
 
 ### Model figures
 
@@ -106,7 +135,5 @@ A test (`colcon test`) checks that the transform carries the message's pose, fra
 
 ## Not yet
 
-- A ROS 2 node that wraps the host simulator (publishing `/joint_states`, `/odom/gait` and the true pose as
-  `/sim/ground_truth`).
 - IMU and range simulation.
 - Uneven ground, and body roll and pitch from leg compliance.

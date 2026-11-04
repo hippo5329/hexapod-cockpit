@@ -5,6 +5,7 @@
 robot_state_publisher turns /joint_states into the legs' TF; gait_odom_tf turns /odom/gait into
 odom -> base_footprint. RViz's fixed frame is odom, so the robot walks across the grid and leaves a
 trail of /odom/gait arrows. The agent is not started here (serial or UDP is the bench's choice).
+hexapod_sim's sim.launch.py includes this with its own rviz_config (adds the ground truth trail).
 """
 import os
 
@@ -22,9 +23,10 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("rviz", default_value="true"),
+        DeclareLaunchArgument("rviz_config", default_value=rviz_file),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(description, "launch", "display.launch.py")),
             launch_arguments={"source": "robot", "rviz": LaunchConfiguration("rviz"),
-                              "rviz_config": rviz_file}.items()),
+                              "rviz_config": LaunchConfiguration("rviz_config")}.items()),
         Node(package="hexapod_bringup", executable="gait_odom_tf"),
     ])
