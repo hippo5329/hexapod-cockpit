@@ -47,8 +47,11 @@ bool SimRobot::init(double slip, const GaitParams& gp, const SimServoParams& sp)
         if (!leg_ik(*g_, leg, gait_.foot(leg), &a)) return false;
         const float ang[3] = {a.coxa, a.femur, a.tibia};
         for (int j = 0; j < 3; ++j) {
-            cal_[leg * 3 + j] = default_cal(leg * 3 + j);
-            servo_[leg * 3 + j].reset(cal_[leg * 3 + j], ang[j]);
+            const int k = leg * 3 + j;
+            cal_[k] = default_cal(k);  // TODO: trims from NVS (servo_trim tool)
+            servo_[k].reset(cal_[k], ang[j]);
+            commanded_[k] = ang[j];
+            pulse_us_[k] = angle_to_us(cal_[k], ang[j]);
         }
     }
     actual_feet(feet_, contact_);
@@ -75,10 +78,12 @@ StepCounts SimRobot::step(float dt, float now_s) {
         if (!leg_ik(*g_, leg, gait_.foot(leg), &a)) { ++n.unreachable; continue; }
         const float ang[3] = {a.coxa, a.femur, a.tibia};
         for (int j = 0; j < 3; ++j) {
+            const int k = leg * 3 + j;
             bool cl = false;
-            const int us = angle_to_us(cal_[leg * 3 + j], ang[j], &cl);
+            commanded_[k] = ang[j];
+            pulse_us_[k] = angle_to_us(cal_[k], ang[j], &cl);
             if (cl) ++n.clamped;
-            servo_[leg * 3 + j].command_us(us);
+            servo_[k].command_us(pulse_us_[k]);
         }
     }
     for (SimServo& s : servo_) s.step(dt, sp_);
@@ -87,9 +92,14 @@ StepCounts SimRobot::step(float dt, float now_s) {
     bool contact[kLegs], both[kLegs];
     actual_feet(feet, contact);
     for (int i = 0; i < kLegs; ++i) both[i] = contact[i] && contact_[i];
-    double dx, dy, dyaw;
-    if (rigid_2d(feet_, feet, both, &dx, &dy, &dyaw))
-        truth_.apply_body(dx * (1 - slip_), dy * (1 - slip_), dyaw * (1 - slip_));
+    double dx = 0, dy = 0, dyaw = 0;
+    if (rigid_2d(feet_, feet, both, &dx, &dy, &dyaw)) {
+        dx *= 1 - slip_; dy *= 1 - slip_; dyaw *= 1 - slip_;
+        truth_.apply_body(dx, dy, dyaw);
+    } else {
+        dx = dy = dyaw = 0;
+    }
+    truth_twist_ = {static_cast<float>(dx / dt), static_cast<float>(dy / dt), static_cast<float>(dyaw / dt)};
     for (int i = 0; i < kLegs; ++i) { feet_[i] = feet[i]; contact_[i] = contact[i]; }
     return n;
 }

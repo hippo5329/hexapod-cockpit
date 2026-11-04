@@ -11,11 +11,14 @@ publishes odom -> base_footprint itself, this node must not run.
 Parameters:
   child_frame  overrides the message's child_frame_id (default: empty = use the message's).
 """
+import signal
+
 import rclpy
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.signals import SignalHandlerOptions
 from tf2_ros import TransformBroadcaster
 
 
@@ -39,12 +42,17 @@ class GaitOdomTf(Node):
 
 
 def main():
-    rclpy.init()
+    # SIGINT and SIGTERM are ours, not rclpy's: on Lyrical rclpy's handler shuts the context
+    # down under a running spin(), which then raises RCLError ("context is not valid") or
+    # exits non-zero, depending on where the signal lands. A flag checked between short
+    # spins stops the same way on every distro.
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = GaitOdomTf()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
-        pass
+    stop = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.append(sig))
+    while not stop and rclpy.ok():
+        rclpy.spin_once(node, timeout_sec=0.1)
     node.destroy_node()
     rclpy.try_shutdown()
 

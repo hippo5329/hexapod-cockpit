@@ -2,9 +2,9 @@
 // (firmware/lib) driving simulated servos, on a flat floor.
 //
 // The world (servos, foot contact, true pose from the grounded feet, slip) is
-// hexa_world; the ROS 2 node in ros/hexapod_sim drives the same one. Gait odometry
-// integrates what the gait commanded, as the firmware's /odom/gait does, so the run
-// reports how far that is from the truth.
+// firmware/lib/hexa_world, the model the firmware and the ROS 2 node (ros/hexapod_sim)
+// run too. Gait odometry integrates what the gait commanded, as the firmware's
+// /odom/gait does, so the run reports how far that is from the truth.
 //
 //   hexa_sim [--slip 0.05] [--csv out.csv] [--quiet]
 //

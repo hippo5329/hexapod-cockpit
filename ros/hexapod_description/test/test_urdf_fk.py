@@ -1,4 +1,4 @@
-"""The URDF and the firmware must agree on where every foot is.
+"""The URDF and the firmware must agree on where every foot and sensor is.
 
 Expands the xacro, walks base_link -> <leg>_foot by the URDF's own joint origins and axes,
 and compares with the firmware's hexa_kin leg_fk (compiled here from firmware/lib) at
@@ -148,3 +148,29 @@ def test_stand_pose_is_the_gaits_neutral_stance(urdf, fk_dump):
         neutral = [float(v) for v in out[i].split()]
         foot = urdf_foot(urdf, leg, zeros)
         assert max(abs(a - b) for a, b in zip(neutral, foot)) < 1e-5, f"{leg}: stand pose foot {foot} != {neutral}"
+
+
+def test_sensor_frames_match_the_simulated_sensors(urdf):
+    """imu_link at the body centre, level; sonar_link where hexa_sensors' range model looks from."""
+    src = r"""
+#include <cstdio>
+#include "hexa_sensors.h"
+int main() { hexa::RangeParams p; std::printf("%.7f %.7f %.7f\n", p.x, p.y, p.yaw); }
+"""
+    with tempfile.TemporaryDirectory() as d:
+        c, exe = os.path.join(d, "s.cpp"), os.path.join(d, "s")
+        with open(c, "w") as f:
+            f.write(src)
+        inc = [a for lib in ("hexa_sensors", "hexa_world", "hexa_gait", "hexa_kin", "hexa_servo")
+               for a in ("-I", os.path.join(FW_LIB, lib))]
+        subprocess.run(["g++", "-std=c++17", *inc, c, "-o", exe], check=True)
+        sx, sy, syaw = (float(v) for v in subprocess.run([exe], check=True, capture_output=True,
+                                                          text=True).stdout.split())
+    imu, sonar, base = urdf["imu_link"], urdf["sonar_link"], urdf["base_link"]
+    assert imu["parent"] == "base_link" and sonar["parent"] == "base_link" and base["parent"] == "base_footprint"
+    assert imu["T"] == rpy_xyz([0, 0, 0], [0, 0, 0])
+    # sonar in base_footprint = base_footprint -> base_link -> sonar_link
+    T = matmul(base["T"], sonar["T"])
+    assert T[0][3] == pytest.approx(sx, abs=1e-6) and T[1][3] == pytest.approx(sy, abs=1e-6)
+    assert math.atan2(T[1][0], T[0][0]) == pytest.approx(syaw, abs=1e-6)
+    assert T[2][3] > 0.05  # above the floor, at the front of the body

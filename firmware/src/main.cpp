@@ -1,6 +1,7 @@
 // miniHexa firmware: one binary, the application chosen by the NVS `app` key.
 //
-//   base     micro-ROS node: /cmd_vel in; /joint_states and /odom/gait out. The gait
+//   base     micro-ROS node: /cmd_vel in; /joint_states and /odom/gait out, and in sim
+//            mode the simulated /imu/data, /sonar and /sim/ground_truth. The gait
 //            ticks at 50 Hz whether or not the agent is there; a lost command stream
 //            ends in a stand (hexa_gait's timeout), never a frozen stride.
 //   console  line commands on the serial port: info, i2c, app, sim, reboot.
@@ -13,6 +14,7 @@
 #include <Wire.h>
 #include <esp_chip_info.h>
 #include <esp_mac.h>
+#include <esp_system.h>
 
 #include <micro_ros_platformio.h>
 #include <rcl/rcl.h>
@@ -20,7 +22,9 @@
 #include <rclc/rclc.h>
 #include <rmw_microros/rmw_microros.h>
 #include <nav_msgs/msg/odometry.h>
+#include <sensor_msgs/msg/imu.h>
 #include <sensor_msgs/msg/joint_state.h>
+#include <sensor_msgs/msg/range.h>
 #ifdef HEXA_CMD_VEL_STAMPED
 #include <geometry_msgs/msg/twist_stamped.h>
 #else
@@ -28,9 +32,8 @@
 #endif
 
 #include "board_minihexa.h"
-#include "hexa_gait.h"
-#include "hexa_kin.h"
-#include "hexa_servo.h"
+#include "hexa_sensors.h"
+#include "hexa_world.h"
 
 using namespace hexa;
 
@@ -40,66 +43,33 @@ Preferences prefs;
 bool sim_mode = true;
 
 // ---------------------------------------------------------------- robot model
+// One model for both modes (hexa_world): gait, IK and pulses. In sim mode its simulated
+// servos, true pose, IMU and range are what the board reports. In real mode the pulses
+// go to the servos (none until the board is identified) and /joint_states carries the
+// COMMANDED angles, since a PWM servo reports nothing back; no sensor is published until
+// its bus and pins are read off the board.
 const float kTickS = 0.02f;  // 50 Hz servo frame
-TripodGait gait;
-ServoCal cal[kJoints];
-SimServo sim_servo[kJoints];
-SimServoParams sim_params;
-float commanded[kJoints];
+SimRobot robot;
 uint32_t unreachable = 0;
-struct {
-    double x = 0, y = 0, yaw = 0;
-} gait_pose;
-BodyTwist gait_twist{0, 0, 0};
+SimImu sim_imu;
+ImuSample imu_sample{};
+SimRange sim_sonar;
+Wall room[kRoomWalls];
 
 void robot_init() {
-    const Geometry& g = minihexa_geometry();
-    gait.init(&g, GaitParams());
-    for (int leg = 0; leg < kLegs; ++leg) {
-        LegAngles a;
-        leg_ik(g, leg, gait.foot(leg), &a);
-        const float ang[3] = {a.coxa, a.femur, a.tibia};
-        for (int j = 0; j < 3; ++j) {
-            const int k = leg * 3 + j;
-            cal[k] = default_cal(k);  // TODO: trims from NVS (servo_trim tool)
-            commanded[k] = ang[j];
-            sim_servo[k].reset(cal[k], ang[j]);
-        }
-    }
+    robot.init();  // slip 0.05, as the host simulator
+    sim_imu.init();
+    sim_sonar.init();
+    default_room(room);
 }
 
 void robot_tick(float now_s) {
-    gait.step(kTickS, now_s);
-    gait_twist = gait.applied();
-    const double c = cos(gait_pose.yaw), s = sin(gait_pose.yaw);
-    gait_pose.x += (c * gait_twist.vx - s * gait_twist.vy) * kTickS;
-    gait_pose.y += (s * gait_twist.vx + c * gait_twist.vy) * kTickS;
-    gait_pose.yaw = remainder(gait_pose.yaw + gait_twist.wz * kTickS, 2 * M_PI);
-
-    const Geometry& g = minihexa_geometry();
-    for (int leg = 0; leg < kLegs; ++leg) {
-        LegAngles a;
-        if (!leg_ik(g, leg, gait.foot(leg), &a)) {
-            ++unreachable;  // keep the leg's last angles
-            continue;
-        }
-        commanded[leg * 3] = a.coxa;
-        commanded[leg * 3 + 1] = a.femur;
-        commanded[leg * 3 + 2] = a.tibia;
-    }
-    for (int k = 0; k < kJoints; ++k) {
-        const int us = angle_to_us(cal[k], commanded[k]);
-        if (sim_mode) {
-            sim_servo[k].command_us(us);
-            sim_servo[k].step(kTickS, sim_params);
-        }
-        // Real output: none until the board is identified (board_minihexa.h).
-    }
+    unreachable += robot.step(kTickS, now_s).unreachable;
+    if (sim_mode) imu_sample = sim_imu.step(kTickS, robot.truth_twist());
+    // Real output: robot.pulse_us(k) to each servo, once the board is identified.
 }
 
-// What /joint_states reports: the simulated servo's angle in sim mode; in real mode
-// the COMMANDED angle, since a PWM servo reports nothing back.
-float joint_angle(int k) { return sim_mode ? sim_servo[k].angle() : commanded[k]; }
+float joint_angle(int k) { return sim_mode ? robot.joint_angle(k) : robot.commanded(k); }
 
 // ---------------------------------------------------------------- micro-ROS base
 rclc_support_t support;
@@ -107,14 +77,16 @@ rcl_allocator_t allocator;
 rcl_node_t node;
 rclc_executor_t executor;
 rcl_subscription_t cmd_sub;
-rcl_publisher_t joint_pub, odom_pub;
+rcl_publisher_t joint_pub, odom_pub, imu_pub, sonar_pub, truth_pub;
 #ifdef HEXA_CMD_VEL_STAMPED
 geometry_msgs__msg__TwistStamped cmd_msg;
 #else
 geometry_msgs__msg__Twist cmd_msg;
 #endif
 sensor_msgs__msg__JointState joint_msg;
-nav_msgs__msg__Odometry odom_msg;
+nav_msgs__msg__Odometry odom_msg, truth_msg;
+sensor_msgs__msg__Imu imu_msg;
+sensor_msgs__msg__Range sonar_msg;
 rosidl_runtime_c__String joint_names[kJoints];
 double joint_pos[kJoints];
 
@@ -132,7 +104,7 @@ void cmd_callback(const void* msg) {
 #else
     const geometry_msgs__msg__Twist& t = *static_cast<const geometry_msgs__msg__Twist*>(msg);
 #endif
-    gait.command({static_cast<float>(t.linear.x), static_cast<float>(t.linear.y),
+    robot.command({static_cast<float>(t.linear.x), static_cast<float>(t.linear.y),
                   static_cast<float>(t.angular.z)},
                  millis() / 1000.0f);
 }
@@ -152,6 +124,20 @@ void msgs_init() {
         odom_msg.pose.covariance[i * 7] = pose_var[i];
         odom_msg.twist.covariance[i * 7] = twist_var[i];
     }
+    set_string(&truth_msg.header.frame_id, "odom");
+    set_string(&truth_msg.child_frame_id, "base_footprint");
+    // The simulated IMU declares the white noise it makes; no orientation (no AHRS yet).
+    set_string(&imu_msg.header.frame_id, "imu_link");
+    imu_msg.orientation_covariance[0] = -1;
+    for (int i = 0; i < 3; ++i) {
+        imu_msg.angular_velocity_covariance[i * 4] = uniform_var(sim_imu.params().gyro_noise);
+        imu_msg.linear_acceleration_covariance[i * 4] = uniform_var(sim_imu.params().accel_noise);
+    }
+    set_string(&sonar_msg.header.frame_id, "sonar_link");
+    sonar_msg.radiation_type = sensor_msgs__msg__Range__ULTRASOUND;
+    sonar_msg.field_of_view = sim_sonar.params().fov;
+    sonar_msg.min_range = sim_sonar.params().min_range;
+    sonar_msg.max_range = sim_sonar.params().max_range;
 }
 
 bool entities_create() {
@@ -170,6 +156,17 @@ bool entities_create() {
     if (rclc_publisher_init_best_effort(&odom_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry),
                                         "odom/gait") != RCL_RET_OK)
         return false;
+    if (sim_mode) {
+        if (rclc_publisher_init_best_effort(&imu_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
+                                            "imu/data") != RCL_RET_OK)
+            return false;
+        if (rclc_publisher_init_best_effort(&sonar_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Range),
+                                            "sonar") != RCL_RET_OK)
+            return false;
+        if (rclc_publisher_init_best_effort(&truth_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry),
+                                            "sim/ground_truth") != RCL_RET_OK)
+            return false;
+    }
     executor = rclc_executor_get_zero_initialized_executor();
     if (rclc_executor_init(&executor, &support.context, 1, &allocator) != RCL_RET_OK) return false;
     if (rclc_executor_add_subscription(&executor, &cmd_sub, &cmd_msg, &cmd_callback, ON_NEW_DATA) != RCL_RET_OK)
@@ -181,6 +178,11 @@ bool entities_create() {
 void entities_destroy() {
     rmw_context_t* rmw = rcl_context_get_rmw_context(&support.context);
     (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw, 0);
+    if (sim_mode) {
+        rcl_publisher_fini(&truth_pub, &node);
+        rcl_publisher_fini(&sonar_pub, &node);
+        rcl_publisher_fini(&imu_pub, &node);
+    }
     rcl_publisher_fini(&odom_pub, &node);
     rcl_publisher_fini(&joint_pub, &node);
     rcl_subscription_fini(&cmd_sub, &node);
@@ -195,20 +197,52 @@ void stamp(builtin_interfaces__msg__Time* t) {
     t->nanosec = static_cast<uint32_t>(ns % 1000000000LL);
 }
 
+void set_pose(nav_msgs__msg__Odometry* m, const Pose2& p) {
+    m->pose.pose.position.x = p.x;
+    m->pose.pose.position.y = p.y;
+    m->pose.pose.orientation.z = sin(p.yaw / 2);
+    m->pose.pose.orientation.w = cos(p.yaw / 2);
+}
+
 void publish_state() {
     stamp(&joint_msg.header.stamp);
     for (int k = 0; k < kJoints; ++k) joint_pos[k] = joint_angle(k);
     rcl_publish(&joint_pub, &joint_msg, nullptr);
 
     odom_msg.header.stamp = joint_msg.header.stamp;
-    odom_msg.pose.pose.position.x = gait_pose.x;
-    odom_msg.pose.pose.position.y = gait_pose.y;
-    odom_msg.pose.pose.orientation.z = sin(gait_pose.yaw / 2);
-    odom_msg.pose.pose.orientation.w = cos(gait_pose.yaw / 2);
-    odom_msg.twist.twist.linear.x = gait_twist.vx;
-    odom_msg.twist.twist.linear.y = gait_twist.vy;
-    odom_msg.twist.twist.angular.z = gait_twist.wz;
+    set_pose(&odom_msg, robot.odom());
+    const BodyTwist tw = robot.odom_twist();
+    odom_msg.twist.twist.linear.x = tw.vx;
+    odom_msg.twist.twist.linear.y = tw.vy;
+    odom_msg.twist.twist.angular.z = tw.wz;
     rcl_publish(&odom_pub, &odom_msg, nullptr);
+}
+
+void publish_truth() {
+    stamp(&truth_msg.header.stamp);
+    set_pose(&truth_msg, robot.truth());
+    const BodyTwist& tt = robot.truth_twist();
+    truth_msg.twist.twist.linear.x = tt.vx;
+    truth_msg.twist.twist.linear.y = tt.vy;
+    truth_msg.twist.twist.angular.z = tt.wz;
+    rcl_publish(&truth_pub, &truth_msg, nullptr);
+}
+
+void publish_imu() {
+    stamp(&imu_msg.header.stamp);
+    imu_msg.linear_acceleration.x = imu_sample.ax;
+    imu_msg.linear_acceleration.y = imu_sample.ay;
+    imu_msg.linear_acceleration.z = imu_sample.az;
+    imu_msg.angular_velocity.x = imu_sample.gx;
+    imu_msg.angular_velocity.y = imu_sample.gy;
+    imu_msg.angular_velocity.z = imu_sample.gz;
+    rcl_publish(&imu_pub, &imu_msg, nullptr);
+}
+
+void publish_sonar() {
+    stamp(&sonar_msg.header.stamp);
+    sonar_msg.range = sim_sonar.measure(robot.truth(), room, kRoomWalls);
+    rcl_publish(&sonar_pub, &sonar_msg, nullptr);
 }
 
 void agent_step() {
@@ -233,7 +267,12 @@ void agent_step() {
                     break;
                 }
             }
-            rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1));
+            // Timeout 0: one non-blocking read of what is buffered. With 1 ms the XRCE client's
+            // framed read takes each read's elapsed time off its timeout in whole milliseconds;
+            // reads returning in under 1 ms take off 0, and the loop sometimes never left
+            // (core dump: loopTask in uxr_read_framed_msg under spin_some; about half the
+            // sessions at full load). 0 makes each of its loops run once; the 50 Hz loop polls.
+            rclc_executor_spin_some(&executor, 0);
             break;
         case Agent::kDisconnected:
             entities_destroy();
@@ -250,14 +289,25 @@ void base_setup() {
 
 void base_loop() {
     static uint32_t next_tick = millis();
-    static uint8_t frame = 0;
+    static uint32_t frame = 0;
     agent_step();
     const uint32_t now = millis();
     if (static_cast<int32_t>(now - next_tick) >= 0) {
         next_tick += static_cast<uint32_t>(kTickS * 1000);
         if (static_cast<int32_t>(now - next_tick) > 100) next_tick = now;  // fell behind: no burst
         robot_tick(now / 1000.0f);
-        if (agent == Agent::kConnected && (++frame & 1) == 0) publish_state();  // 25 Hz
+        ++frame;
+        // The serial link's budget (docs/firmware.md): ~50 KB/s of messages, about half of
+        // 921600 baud. The full set at 25 Hz ground truth was ~65 KB/s and saturated it: rates
+        // fell, and on Lyrical the loop sometimes hung (the watchdog in setup() now resets it).
+        if (agent == Agent::kConnected) {
+            if (frame % 2 == 0) publish_state();  // 25 Hz: joint_states 452 B, odom 732 B
+            if (sim_mode) {
+                publish_imu();                              // 50 Hz, 332 B
+                if (frame % 5 == 0) publish_sonar();        // 10 Hz, 56 B: an HC-SR04's pace
+                if (frame % 10 == 1) publish_truth();       //  5 Hz, 732 B: evaluation only
+            }
+        }
     }
 }
 
@@ -272,6 +322,10 @@ void console_info() {
     Serial.printf("chip %s rev %d cores %d flash %u MB\n", ESP.getChipModel(), ci.revision, ci.cores,
                   static_cast<unsigned>(ESP.getFlashChipSize() / (1024 * 1024)));
     Serial.printf("mac %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    Serial.printf("last reset: %s\n", esp_reset_reason() == ESP_RST_TASK_WDT ? "loop watchdog (the loop hung)"
+                                      : esp_reset_reason() == ESP_RST_PANIC  ? "panic"
+                                      : esp_reset_reason() == ESP_RST_POWERON ? "power-on or EN"
+                                                                              : "other");
     Serial.printf("app %s  sim %s  board %s\n", prefs.getString("app", "base").c_str(), sim_mode ? "on" : "off",
                   HEXA_BOARD_VERIFIED ? "verified" : "NOT identified (real mode refused)");
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
@@ -354,6 +408,9 @@ bool boot_button_pressed(uint32_t window_ms) {
 }  // namespace
 
 void setup() {
+    // A loop stuck for 5 s (the task watchdog's timeout) panics and reboots: the board comes
+    // back and reconnects, rather than freezing the gait mid-stride. `info` shows the reason.
+    enableLoopWDT();
     Serial.begin(HEXA_SERIAL_BAUD);
     prefs.begin("hexa", false);
     sim_mode = prefs.getBool("sim", true) || !HEXA_BOARD_VERIFIED;

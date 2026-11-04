@@ -1,6 +1,8 @@
-// The host simulator's world: the firmware's gait, IK and servo mapping driving
-// simulated servos on a flat floor, with the body's true pose worked out from the
-// feet. Shared by hexa_sim (scenarios) and the ROS 2 node (ros/hexapod_sim).
+// The robot model: the gait, IK and servo mapping driving simulated servos on a flat
+// floor, with the body's true pose worked out from the feet. One model for the
+// firmware (both modes), the host simulator (sim/hexa_sim) and the ROS 2 node
+// (ros/hexapod_sim). In real mode the firmware sends pulse_us() to the servos and
+// reports commanded(); the simulated servos and the world are not published.
 //
 // Each step the gait gives foot targets, IK turns them into joint angles, the
 // calibration into pulses, and each SimServo turns toward its pulse at a bounded
@@ -41,8 +43,12 @@ public:
     void command(const BodyTwist& cmd, float now_s) { gait_.command(cmd, now_s); }
     StepCounts step(float dt, float now_s);
 
-    float joint_angle(int k) const { return servo_[k].angle(); }
+    float joint_angle(int k) const { return servo_[k].angle(); }  // the simulated servo's
+    float commanded(int k) const { return commanded_[k]; }        // what IK asked for
+    int pulse_us(int k) const { return pulse_us_[k]; }            // what goes to the servo
     const Pose2& truth() const { return truth_; }
+    // The true body twist over the last step (body frame, after slip).
+    const BodyTwist& truth_twist() const { return truth_twist_; }
     const Pose2& odom() const { return odom_; }
     BodyTwist odom_twist() const { return gait_.applied(); }
     const TripodGait& gait() const { return gait_; }
@@ -62,9 +68,12 @@ private:
     TripodGait gait_;
     ServoCal cal_[kJoints];
     SimServo servo_[kJoints];
+    float commanded_[kJoints];
+    int pulse_us_[kJoints];
     Vec3 feet_[kLegs];
     bool contact_[kLegs];
     Pose2 truth_, odom_;
+    BodyTwist truth_twist_{0, 0, 0};
 };
 
 }  // namespace hexa

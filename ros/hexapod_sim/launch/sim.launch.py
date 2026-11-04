@@ -2,9 +2,10 @@
 
     ros2 launch hexapod_sim sim.launch.py [slip:=0.05] [rviz:=true]
 
-hexapod_sim_node stands in for the firmware (/cmd_vel in; /joint_states, /odom/gait and
-/sim/ground_truth out). The robot is drawn where its gait odometry says, as on the real robot;
-the green trail is where it really went (ground truth), the orange one where it thinks it went.
+hexapod_sim_node stands in for the firmware (/cmd_vel in; /joint_states, /odom/gait,
+/imu/data, /sonar and /sim/ground_truth out) in a walled 2 m x 2 m room. The robot is drawn where
+its gait odometry says, as on the real robot; the green trail is where it really went (ground
+truth), the orange one where it thinks it went; the sonar cone and the room's walls are drawn too.
 Drive it with any /cmd_vel publisher (Twist on Jazzy, TwistStamped on Lyrical).
 """
 import os

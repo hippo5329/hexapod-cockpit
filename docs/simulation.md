@@ -40,7 +40,63 @@ A scenario passes when:
 With no slip, the true motion matches the command within about 1 mm and 1° over 0.3 m and 137°. That shows the
 IK, FK and gait are consistent with each other.
 
-The world (servos, foot contact, true pose, slip) is `sim/hexa_world`; the scenarios are `sim/hexa_sim.cpp`.
+
+### Model figures
+
+| figure | value | basis |
+|---|---|---|
+| servo rate | 10.5 rad/s | listed HPD-0127 0.05 s/60° at 7.4 V, halved for load. **Unmeasured** |
+| servo deadband | 3 µs | a typical hobby micro servo. **Unmeasured** |
+| pulse resolution | 1 µs | firmware rounds to whole µs |
+| foot slip | 5 % of stance motion (`--slip`) | assumed for hard feet on a smooth floor. **Unmeasured** |
+| geometry | coxa 30, femur 50, tibia 75 mm; hips on a 120 × 110 mm layout | **placeholders** sized to the 240 × 234 mm listing |
+
+Each figure gets replaced by a bench measurement once the robot is here. The sim is only as good as these numbers.
+
+The world (servos, foot contact, true pose, slip) is `firmware/lib/hexa_world`: the same model the firmware's sim
+mode and the ROS 2 node run. The scenarios are `sim/hexa_sim.cpp`.
+
+## Simulated sensors (`firmware/lib/hexa_sensors`)
+
+The IMU and the ultrasonic, fed by the model's true motion. The firmware's sim mode and the ROS 2 node publish
+them; the native tests (`test_sensors`) check them. A simulated sensor behaves like a typical real one and
+declares the noise it actually makes: the white noise is uniform on ±peak, so its variance is peak²/3, and that
+is the covariance in the message, never a second constant.
+
+**IMU** (`/imu/data`, 50 Hz, frame `imu_link`): the QMI8658A, accelerometer and gyro. There is no magnetometer
+and no AHRS on the board yet, so the orientation is marked unknown (`orientation_covariance[0] = -1`).
+
+| figure | value | basis |
+|---|---|---|
+| accel noise | variance 8e-5 (m/s²)² | the QMI8658's datasheet figure (linorobot2-cockpit's per-chip table) |
+| gyro noise | variance 2e-6 (rad/s)² | the same table |
+| gyro bias | starts at 0 (calibrated at boot), random walk 0.0015 rad/s/√s, held within ±0.004 rad/s | generic MEMS. **Unmeasured** |
+| accel bias | random walk 0.01 m/s²/√s, held within ±0.03 m/s² | generic MEMS. **Unmeasured** |
+| scale error | +1 % on every axis | generic MEMS. **Unmeasured** |
+| band limit | 60 ms | the accelerometer's low-pass |
+| mount tilt | roll 1.0°, pitch −1.5° | a board is never mounted level. The URDF's `imu_link` is level, so the stack meets the tilt as an unmodelled error, as on the robot |
+
+Standing still it reads about 9.90 m/s² on z and +0.23 to +0.24 m/s² on x: the tilt leaking gravity (0.26), less
+the bias. Turning
+0.4 rad/s for 6 s, the integrated gyro is within 2 % of the true turn. Gait odometry claims 6 % more than the
+truth: the slip the IMU can see and the gait cannot. Walking, the tripod hand-overs show as ~0.6 m/s² jolts.
+
+**Ultrasonic** (`/sonar`, 10 Hz, frame `sonar_link`, `sensor_msgs/Range`): a 15° cone, raycast against the
+walls of the world: by default a closed 2 m × 2 m room centred on the start pose (`room_half_size` on the
+node).
+
+| figure | value | basis |
+|---|---|---|
+| cone | 15°, 9 rays | HC-SR04 class. **Unmeasured** |
+| range | 0.02 – 4.0 m: `-inf` closer, `+inf` beyond (REP 117) | HC-SR04 class |
+| noise | ±(3 mm + 0.5 % of range) | **Unmeasured** |
+| reflection | a ray meeting a wall more than 30° off its normal reflects away: no echo from that ray | specular, typical of a smooth wall |
+| mount | 0.08 m forward of the body centre, 0.08 m up, looking forward | **placeholder**; the URDF's `sonar_link` is the same, checked by a test |
+
+Not modelled: the floor echo, a corner's retro-reflection (a real corner answers even at a steep angle), and the
+first echo's dependence on the target's size.
+
+![the simulated miniHexa after a walk, the sonar cone on the room's wall](images/minihexa_sim_room.png)
 
 ## ROS 2 node (`ros/hexapod_sim`)
 
@@ -56,32 +112,27 @@ ros2 launch hexapod_sim sim.launch.py slip:=0.10   # another floor
 | `/cmd_vel` | `Twist` (Jazzy), `TwistStamped` (Lyrical) | as the firmware is built; parameter `cmd_vel_stamped` overrides |
 | `/joint_states` | `sensor_msgs/JointState` | the simulated servos' angles, 25 Hz, best effort |
 | `/odom/gait` | `nav_msgs/Odometry` | the gait odometry, exactly as the firmware computes it |
-| `/sim/ground_truth` | `nav_msgs/Odometry` | where the body really went (grounded feet, less slip); `odom` frame, same origin |
+| `/sim/ground_truth` | `nav_msgs/Odometry` | where the body really went (grounded feet, less slip), 5 Hz; `odom` frame, same origin |
+| `/imu/data` | `sensor_msgs/Imu` | the simulated QMI8658A, 50 Hz (above) |
+| `/sonar` | `sensor_msgs/Range` | the simulated ultrasonic, 10 Hz (above) |
+| `/sim/walls` | `visualization_msgs/Marker` | the room's walls, latched, for RViz |
 
-The node steps the world at the firmware's 50 Hz frame, and the gait's 0.5 s command timeout applies.
+All but `/cmd_vel` and `/sim/walls` are best effort, as from the firmware. The node steps the world at the
+firmware's 50 Hz frame, and the gait's 0.5 s command timeout applies. Parameters: `slip`, `room_half_size`,
+`seed` (sensor noise), `cmd_vel_stamped`.
 `sim.launch.py` includes the walking view (below), so the robot is drawn where its gait odometry says, as on the
 real robot. Two trails show the difference: orange for where it thinks it went (`/odom/gait`), green for where it
-really went (`/sim/ground_truth`).
+really went (`/sim/ground_truth`). The room's walls and the sonar cone are drawn too.
 
 It is tested against the board: the bare-ESP32 sim-mode check passes on the node with the same numbers. Its own
-`colcon test` walks it 0.2 m and checks the ground truth against the slip, at slip 0.05 and 0.5.
-
-### Model figures
-
-| figure | value | basis |
-|---|---|---|
-| servo rate | 10.5 rad/s | listed HPD-0127 0.05 s/60° at 7.4 V, halved for load. **Unmeasured** |
-| servo deadband | 3 µs | a typical hobby micro servo. **Unmeasured** |
-| pulse resolution | 1 µs | firmware rounds to whole µs |
-| foot slip | 5 % of stance motion (`--slip`) | assumed for hard feet on a smooth floor. **Unmeasured** |
-| geometry | coxa 30, femur 50, tibia 75 mm; hips on a 120 × 110 mm layout | **placeholders** sized to the 240 × 234 mm listing |
-
-Each figure gets replaced by a bench measurement once the robot is here. The sim is only as good as these numbers.
+`colcon test` walks it 0.2 m and checks the ground truth against the slip (at slip 0.05 and 0.5), the IMU's
+rates, covariances and standing reading, and the sonar's distance to the wall before and after the walk.
 
 ## Firmware sim mode
 
-On a bare ESP32 (or the miniHexa before its pins are identified) the `base` application drives simulated servos
-and publishes their angles on `/joint_states`. A micro-ROS agent on the serial port and a `/cmd_vel` publisher
+On a bare ESP32 (or the miniHexa before its pins are identified) the `base` application runs the same model:
+simulated servos, their angles on `/joint_states`, and the simulated `/imu/data`, `/sonar` and
+`/sim/ground_truth`, at the node's rates. A micro-ROS agent on the serial port and a `/cmd_vel` publisher
 are enough to watch the gait in RViz (`display.launch.py source:=robot`, below).
 
 ## Robot model and RViz (`ros/hexapod_description`)
@@ -126,7 +177,7 @@ ros2 launch hexapod_bringup view_robot.launch.py
 - `gait_odom_tf` republishes each `/odom/gait` message as the `odom` → `base_footprint` transform, with the
   message's own stamp, so the legs (from `/joint_states`) and the body move on one clock.
 - RViz's fixed frame is `odom`: the robot walks across the grid, with a trail of `/odom/gait` arrows behind it.
-- The pose is what the gait *commanded*: no slip, and no IMU yet. Once an EKF fuses `/odom/gait` with the IMU,
+- The pose is what the gait *commanded*: no slip, and the IMU not fused yet. Once an EKF fuses `/odom/gait` with the IMU,
   the EKF publishes `odom` → `base_footprint` and `gait_odom_tf` must not run: a frame has one parent.
 
 A test (`colcon test`) checks that the transform carries the message's pose, frames and stamp.
@@ -135,5 +186,6 @@ A test (`colcon test`) checks that the transform carries the message's pose, fra
 
 ## Not yet
 
-- IMU and range simulation.
+- An AHRS on the board (orientation in `/imu/data`), and the EKF that fuses it with `/odom/gait`.
+- Other worlds than the square room (obstacles, a saved map's walls).
 - Uneven ground, and body roll and pitch from leg compliance.

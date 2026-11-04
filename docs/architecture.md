@@ -18,7 +18,7 @@ The miniHexa has no robot computer on board, so the first setup runs the agent a
 ## Firmware (one binary, tools chosen by `app`, as in the cockpit)
 
 - **base**: micro-ROS node. Subscribes `/cmd_vel` (Twist on Jazzy, TwistStamped on Lyrical) and `/body_pose`
-  (height, roll, pitch, yaw of the body over the feet). Publishes `/imu/data_raw`, `/range`, `/battery`,
+  (height, roll, pitch, yaw of the body over the feet). Publishes `/imu/data`, `/sonar`, `/battery`,
   `/joint_states` (commanded angles: the servos give no feedback), `/odom/gait` (body motion from completed steps).
 - **Gait engine on the controller**: tripod first, then ripple and wave. Body velocity → step length and
   direction per leg → foot trajectories → leg IK → servo pulses at 50 Hz. A lost `/cmd_vel` stream (timeout) ends

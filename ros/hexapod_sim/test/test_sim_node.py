@@ -1,17 +1,20 @@
 """hexapod_sim_node stands in for the firmware: same topics, rates and gait, plus ground truth.
 
 Walks 0.05 m/s for 4 s, then one zero, as the board check does: /odom/gait gains the command,
-/sim/ground_truth trails it by the slip, and the robot stands again.
+/sim/ground_truth trails it by the slip, and the robot stands again. The simulated IMU and
+ultrasonic publish what the models make, declare that noise, and see the room.
 """
 import math
 import os
 import subprocess
 import time
 
+import pytest
 import rclpy
 from nav_msgs.msg import Odometry
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import JointState
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from sensor_msgs.msg import Imu, JointState, Range
+from visualization_msgs.msg import Marker
 
 NODE = os.environ["HEXA_SIM_NODE"]
 STAMPED = os.environ.get("ROS_DISTRO") != "jazzy"
@@ -29,10 +32,16 @@ class Probe:
         rclpy.init()
         self.node = rclpy.create_node("test_sim_node")
         self.js, self.js_count, self.odom, self.truth = None, 0, None, None
+        self.imus, self.ranges, self.walls = [], [], None
         self.node.create_subscription(JointState, "joint_states", self.on_js, qos_profile_sensor_data)
         self.node.create_subscription(Odometry, "odom/gait", lambda m: setattr(self, "odom", m),
                                       qos_profile_sensor_data)
-        self.node.create_subscription(Odometry, "sim/ground_truth", lambda m: setattr(self, "truth", m), 10)
+        self.node.create_subscription(Odometry, "sim/ground_truth", lambda m: setattr(self, "truth", m),
+                                      qos_profile_sensor_data)
+        self.node.create_subscription(Imu, "imu/data", self.imus.append, qos_profile_sensor_data)
+        self.node.create_subscription(Range, "sonar", self.ranges.append, qos_profile_sensor_data)
+        self.node.create_subscription(Marker, "sim/walls", lambda m: setattr(self, "walls", m),
+                                      QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.pub = self.node.create_publisher(CmdType, "cmd_vel", 10)
 
     def on_js(self, m):
@@ -107,5 +116,38 @@ def test_slip_parameter():
         assert p.odom is not None and p.truth is not None
         odx, tdx, _ = p.walk()
         assert 0.40 <= tdx / odx <= 0.55, f"slip 0.5: ground truth {tdx:.3f} m vs odom {odx:.3f} m"
+    finally:
+        p.close()
+
+
+def test_imu_and_sonar():
+    p = Probe(0.05)
+    try:
+        p.spin_for(3.0)
+        assert p.imus and p.ranges, "no /imu/data or /sonar"
+        assert p.walls is not None and len(p.walls.points) == 8, "no latched /sim/walls (4 segments)"
+        n_imu, n_range = len(p.imus), len(p.ranges)
+        p.spin_for(4.0)
+        imu_rate, range_rate = (len(p.imus) - n_imu) / 4.0, (len(p.ranges) - n_range) / 4.0
+        assert 45 <= imu_rate <= 55, f"/imu/data at {imu_rate:.1f} Hz (50 expected)"
+        assert 8 <= range_rate <= 12, f"/sonar at {range_rate:.1f} Hz (10 expected)"
+        m = p.imus[-1]
+        assert m.header.frame_id == "imu_link" and m.orientation_covariance[0] == -1.0
+        assert m.linear_acceleration_covariance[0] == pytest.approx(8e-5, rel=1e-3)  # QMI8658, declared = made
+        assert m.angular_velocity_covariance[8] == pytest.approx(2e-6, rel=1e-3)
+        still = p.imus[n_imu:]
+        az = sum(i.linear_acceleration.z for i in still) / len(still)
+        ax = sum(i.linear_acceleration.x for i in still) / len(still)
+        gz = sum(i.angular_velocity.z for i in still) / len(still)
+        assert 9.80 <= az <= 9.98, f"standing az {az:.3f}"
+        assert 0.2 <= ax <= 0.3, f"standing ax {ax:.3f}: the 1.5 deg mount pitch must leak gravity"
+        assert abs(gz) < 0.005, f"standing gz {gz:.4f}"
+        r = p.ranges[-1]
+        assert r.header.frame_id == "sonar_link" and r.radiation_type == Range.ULTRASOUND
+        assert r.range == pytest.approx(0.92, abs=0.01), f"sonar {r.range:.3f} m from the room centre (0.92)"
+        _, tdx, _ = p.walk()
+        expect = 1.0 - 0.08 - p.truth.pose.pose.position.x
+        assert p.ranges[-1].range == pytest.approx(expect, abs=0.01), \
+            f"sonar {p.ranges[-1].range:.3f} m after the walk, wall at {expect:.3f} m by ground truth"
     finally:
         p.close()

@@ -17,8 +17,9 @@ What runs today, without the robot:
 - **Walking view** (`ros/hexapod_bringup`): the firmware's gait odometry as the `odom` → `base_footprint` TF, so
   RViz shows the robot walking across the floor. Run it with `ros2 launch hexapod_bringup view_robot.launch.py`
   beside a micro-ROS agent.
-- **Simulator node** (`ros/hexapod_sim`): the host simulator in place of the firmware, with ground truth. Run it
-  with `ros2 launch hexapod_sim sim.launch.py`: no board needed.
+- **Simulator node** (`ros/hexapod_sim`): the host simulator in place of the firmware, with ground truth and
+  the simulated IMU and ultrasonic in a walled room. Run it with `ros2 launch hexapod_sim sim.launch.py`: no
+  board needed.
 
 ## Goals
 

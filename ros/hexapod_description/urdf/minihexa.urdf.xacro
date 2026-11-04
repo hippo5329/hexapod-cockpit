@@ -51,6 +51,26 @@
     </inertial>
   </link>
 
+  <!-- The IMU (QMI8658A on the controller board), at the body centre and nominally level. A
+       real board is mounted a little off; the simulated IMU is too (hexa_sensors), and this
+       frame does not know it, as with the robot. -->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- The ultrasonic at the front of the body, looking forward: hexa_sensors' RangeParams
+       (x in base_footprint) is the same mount, checked by test_urdf_fk.py. Placeholder
+       until the robot is measured. -->
+  <link name="sonar_link"/>
+  <joint name="sonar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="sonar_link"/>
+    <origin xyz="0.080 0 0.020" rpy="0 0 0"/>
+  </joint>
+
   <!-- A link drawn as a cylinder along its own +x, `bar_len` long. -->
   <xacro:macro name="bar" params="name bar_len mat mass">
     <link name="${name}">

@@ -41,6 +41,18 @@ Visualization Manager:
         Head Radius: 0.005
       Covariance:
         Value: false
+    - Class: rviz_default_plugins/Range
+      Name: Sonar
+      Enabled: true
+      Topic:
+        Value: /sonar
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 5
+      Color: 80; 160; 255
+      Alpha: 0.4
+      Buffer Length: 1
     - Class: rviz_default_plugins/TF
       Name: TF
       Enabled: false
