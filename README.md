@@ -14,6 +14,9 @@ What runs today, without the robot:
   true pose vs gait odometry. Run it with `make -C sim run`.
 - **Robot model** (`ros/hexapod_description`): URDF and RViz view of the miniHexa, tested against the firmware's
   kinematics. Run it with `ros2 launch hexapod_description display.launch.py`.
+- **Walking view** (`ros/hexapod_bringup`): the firmware's gait odometry as the `odom` → `base_footprint` TF, so
+  RViz shows the robot walking across the floor. Run it with `ros2 launch hexapod_bringup view_robot.launch.py`
+  beside a micro-ROS agent.
 
 ## Goals
 

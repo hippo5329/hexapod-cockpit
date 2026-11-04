@@ -85,6 +85,25 @@ The URDF is tied to the firmware by tests (`colcon test`):
 
 Change a length in `hexa_kin.cpp` without changing it in `minihexa.urdf.xacro` (or the reverse), and the tests fail.
 
+## Walking view (`ros/hexapod_bringup`)
+
+`display.launch.py source:=robot` shows the legs stepping, but the body stays on its grid cell: its fixed frame is
+`base_footprint`. To watch the robot walk, run the firmware's micro-ROS agent and:
+
+```
+ros2 launch hexapod_bringup view_robot.launch.py
+```
+
+- `gait_odom_tf` republishes each `/odom/gait` message as the `odom` → `base_footprint` transform, with the
+  message's own stamp, so the legs (from `/joint_states`) and the body move on one clock.
+- RViz's fixed frame is `odom`: the robot walks across the grid, with a trail of `/odom/gait` arrows behind it.
+- The pose is what the gait *commanded*: no slip, and no IMU yet. Once an EKF fuses `/odom/gait` with the IMU,
+  the EKF publishes `odom` → `base_footprint` and `gait_odom_tf` must not run: a frame has one parent.
+
+A test (`colcon test`) checks that the transform carries the message's pose, frames and stamp.
+
+![miniHexa after a 0.3 m walk, gait odometry trail behind it](images/minihexa_walk_rviz.png)
+
 ## Not yet
 
 - A ROS 2 node that wraps the host simulator (publishing `/joint_states`, `/odom/gait` and the true pose as

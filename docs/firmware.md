@@ -50,7 +50,7 @@ carry the *commanded* angles, because a PWM servo reports nothing back.
 |---|---|---|
 | `/cmd_vel` | `geometry_msgs/Twist` (Jazzy), `TwistStamped` (Lyrical) | `linear.x`, `linear.y`, `angular.z`; clamped to the stride limit |
 | `/joint_states` | `sensor_msgs/JointState` | 18 joints `rf_coxa` … `lf_tibia`; sim: simulated angle; real: commanded |
-| `/odom/gait` | `nav_msgs/Odometry` | integrated commanded body twist (dead reckoning, no slip); `odom` → `base_link` |
+| `/odom/gait` | `nav_msgs/Odometry` | integrated commanded body twist (dead reckoning, no slip); `odom` → `base_footprint` (as a TF by `hexapod_bringup`'s `gait_odom_tf`) |
 
 Not yet: IMU (QMI8658A), ultrasonic range, battery. They come once their buses and pins are read off the board.
 

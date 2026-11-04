@@ -144,7 +144,7 @@ void msgs_init() {
     joint_msg.position.data = joint_pos;
     joint_msg.position.size = joint_msg.position.capacity = kJoints;
     set_string(&odom_msg.header.frame_id, "odom");
-    set_string(&odom_msg.child_frame_id, "base_link");
+    set_string(&odom_msg.child_frame_id, "base_footprint");
     // Dead reckoning from commanded steps: loose, and yaw the loosest (no magnetometer).
     const double pose_var[6] = {0.01, 0.01, 1e6, 1e6, 1e6, 0.05};
     const double twist_var[6] = {0.004, 0.004, 1e6, 1e6, 1e6, 0.02};

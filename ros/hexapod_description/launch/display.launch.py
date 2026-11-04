@@ -8,7 +8,10 @@ source:=stand joint_state_publisher holds the gait's standing pose (config/stand
 source:=gui   joint_state_publisher_gui: move each joint by hand. Needs the
               joint_state_publisher_gui package (not in every image).
 source:=robot nothing publishes joint states here; the firmware's base application does
-              (sim mode on a bare ESP32, or the robot), through a micro-ROS agent.
+              (sim mode on a bare ESP32, or the robot), through a micro-ROS agent. The fixed
+              frame is base_footprint, so the legs step but the body stays put; to see it walk
+              across the grid, use hexapod_bringup's view_robot.launch.py (adds odom -> base_footprint).
+rviz_config   another RViz config (view_robot.launch.py passes one whose fixed frame is odom).
 """
 import os
 
@@ -32,12 +35,13 @@ def generate_launch_description():
         DeclareLaunchArgument("source", default_value="stand", choices=["stand", "gui", "robot"],
                               description="who publishes /joint_states"),
         DeclareLaunchArgument("rviz", default_value="true"),
+        DeclareLaunchArgument("rviz_config", default_value=rviz_file),
         Node(package="robot_state_publisher", executable="robot_state_publisher",
              parameters=[{"robot_description": description}]),
         Node(package="joint_state_publisher", executable="joint_state_publisher",
              parameters=[stand_file], condition=IfCondition(EqualsSubstitution(LaunchConfiguration("source"), "stand"))),
         Node(package="joint_state_publisher_gui", executable="joint_state_publisher_gui",
              condition=IfCondition(EqualsSubstitution(LaunchConfiguration("source"), "gui"))),
-        Node(package="rviz2", executable="rviz2", arguments=["-d", rviz_file],
+        Node(package="rviz2", executable="rviz2", arguments=["-d", LaunchConfiguration("rviz_config")],
              condition=IfCondition(LaunchConfiguration("rviz"))),
     ])
