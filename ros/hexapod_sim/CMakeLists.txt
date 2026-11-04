@@ -13,7 +13,7 @@ find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
-# The robot model, the sensors and the gait are the firmware's own firmware/lib, compiled
+# The robot model, the sensors, the AHRS and the gait are the firmware's own firmware/lib, compiled
 # here as they are for the host simulator: build this package from a checkout of the whole
 # repository.
 set(HEXA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../.. CACHE PATH "hexapod-cockpit checkout")
@@ -21,11 +21,12 @@ set(HEXA_LIB ${HEXA_ROOT}/firmware/lib)
 add_library(hexa_world STATIC
   ${HEXA_LIB}/hexa_world/hexa_world.cpp
   ${HEXA_LIB}/hexa_sensors/hexa_sensors.cpp
+  ${HEXA_LIB}/hexa_ahrs/hexa_ahrs.cpp
   ${HEXA_LIB}/hexa_kin/hexa_kin.cpp
   ${HEXA_LIB}/hexa_gait/hexa_gait.cpp
   ${HEXA_LIB}/hexa_servo/hexa_servo.cpp)
 target_include_directories(hexa_world PUBLIC
-  ${HEXA_LIB}/hexa_world ${HEXA_LIB}/hexa_sensors ${HEXA_LIB}/hexa_kin ${HEXA_LIB}/hexa_gait ${HEXA_LIB}/hexa_servo)
+  ${HEXA_LIB}/hexa_world ${HEXA_LIB}/hexa_sensors ${HEXA_LIB}/hexa_ahrs ${HEXA_LIB}/hexa_kin ${HEXA_LIB}/hexa_gait ${HEXA_LIB}/hexa_servo)
 set_target_properties(hexa_world PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_executable(hexapod_sim_node src/hexapod_sim_node.cpp)

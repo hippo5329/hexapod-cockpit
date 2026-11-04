@@ -1,7 +1,8 @@
 // miniHexa firmware: one binary, the application chosen by the NVS `app` key.
 //
 //   base     micro-ROS node: /cmd_vel in; /joint_states and /odom/gait out, and in sim
-//            mode the simulated /imu/data, /sonar and /sim/ground_truth. The gait
+//            mode the simulated /imu/data (with the board's AHRS orientation), /sonar
+//            and /sim/ground_truth. The gait
 //            ticks at 50 Hz whether or not the agent is there; a lost command stream
 //            ends in a stand (hexa_gait's timeout), never a frozen stride.
 //   console  line commands on the serial port: info, i2c, app, sim, reboot.
@@ -32,6 +33,7 @@
 #endif
 
 #include "board_minihexa.h"
+#include "hexa_ahrs.h"
 #include "hexa_sensors.h"
 #include "hexa_world.h"
 
@@ -47,25 +49,33 @@ bool sim_mode = true;
 // servos, true pose, IMU and range are what the board reports. In real mode the pulses
 // go to the servos (none until the board is identified) and /joint_states carries the
 // COMMANDED angles, since a PWM servo reports nothing back; no sensor is published until
-// its bus and pins are read off the board.
+// its bus and pins are read off the board. The AHRS fuses whichever IMU samples there
+// are, simulated or (later) the real QMI8658A's.
 const float kTickS = 0.02f;  // 50 Hz servo frame
 SimRobot robot;
 uint32_t unreachable = 0;
 SimImu sim_imu;
 ImuSample imu_sample{};
+Ahrs ahrs;
 SimRange sim_sonar;
 Wall room[kRoomWalls];
 
 void robot_init() {
     robot.init();  // slip 0.05, as the host simulator
     sim_imu.init();
+    ahrs.init();
     sim_sonar.init();
     default_room(room);
 }
 
 void robot_tick(float now_s) {
     unreachable += robot.step(kTickS, now_s).unreachable;
-    if (sim_mode) imu_sample = sim_imu.step(kTickS, robot.truth_twist());
+    if (sim_mode) {
+        imu_sample = sim_imu.step(kTickS, robot.truth_twist());
+        // Every sample, connected or not: the estimate is settled when a session starts.
+        ahrs.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, imu_sample.ax, imu_sample.ay, imu_sample.az,
+                    kTickS);
+    }
     // Real output: robot.pulse_us(k) to each servo, once the board is identified.
 }
 
@@ -126,7 +136,8 @@ void msgs_init() {
     }
     set_string(&truth_msg.header.frame_id, "odom");
     set_string(&truth_msg.child_frame_id, "base_footprint");
-    // The simulated IMU declares the white noise it makes; no orientation (no AHRS yet).
+    // The simulated IMU declares the white noise it makes; the orientation is the AHRS's
+    // (publish_imu), unknown (REP 145: -1) until it has seeded.
     set_string(&imu_msg.header.frame_id, "imu_link");
     imu_msg.orientation_covariance[0] = -1;
     for (int i = 0; i < 3; ++i) {
@@ -236,6 +247,16 @@ void publish_imu() {
     imu_msg.angular_velocity.x = imu_sample.gx;
     imu_msg.angular_velocity.y = imu_sample.gy;
     imu_msg.angular_velocity.z = imu_sample.gz;
+    if (ahrs.seeded()) {
+        const Quat& q = ahrs.q();
+        imu_msg.orientation.w = q.w;
+        imu_msg.orientation.x = q.x;
+        imu_msg.orientation.y = q.y;
+        imu_msg.orientation.z = q.z;
+        // Roll and pitch levelled against gravity; yaw unanchored (no magnetometer).
+        imu_msg.orientation_covariance[0] = imu_msg.orientation_covariance[4] = ahrs.params().roll_pitch_var;
+        imu_msg.orientation_covariance[8] = ahrs.params().yaw_var;
+    }
     rcl_publish(&imu_pub, &imu_msg, nullptr);
 }
 

@@ -2,7 +2,8 @@
 
 Walks 0.05 m/s for 4 s, then one zero, as the board check does: /odom/gait gains the command,
 /sim/ground_truth trails it by the slip, and the robot stands again. The simulated IMU and
-ultrasonic publish what the models make, declare that noise, and see the room.
+ultrasonic publish what the models make, declare that noise, and see the room; the board's
+AHRS gives /imu/data the sensor's tilt and follows a turn.
 """
 import math
 import os
@@ -54,23 +55,25 @@ class Probe:
         self.proc.terminate()
         self.proc.wait(timeout=10)
 
-    def spin_for(self, seconds, vx=None):
+    def spin_for(self, seconds, vx=None, wz=0.0):
         end = time.monotonic() + seconds
         nxt = time.monotonic()
         while time.monotonic() < end:
             rclpy.spin_once(self.node, timeout_sec=0.01)
             if vx is not None and time.monotonic() >= nxt:
-                self.send(vx)
+                self.send(vx, wz)
                 nxt += 0.05
 
-    def send(self, vx):
+    def send(self, vx, wz=0.0):
         m = CmdType()
         if STAMPED:
             m.header.stamp = self.node.get_clock().now().to_msg()
             m.header.frame_id = "base_link"
             m.twist.linear.x = vx
+            m.twist.angular.z = wz
         else:
             m.linear.x = vx
+            m.angular.z = wz
         self.pub.publish(m)
 
     def stand_error(self):
@@ -132,7 +135,7 @@ def test_imu_and_sonar():
         assert 45 <= imu_rate <= 55, f"/imu/data at {imu_rate:.1f} Hz (50 expected)"
         assert 8 <= range_rate <= 12, f"/sonar at {range_rate:.1f} Hz (10 expected)"
         m = p.imus[-1]
-        assert m.header.frame_id == "imu_link" and m.orientation_covariance[0] == -1.0
+        assert m.header.frame_id == "imu_link"
         assert m.linear_acceleration_covariance[0] == pytest.approx(8e-5, rel=1e-3)  # QMI8658, declared = made
         assert m.angular_velocity_covariance[8] == pytest.approx(2e-6, rel=1e-3)
         still = p.imus[n_imu:]
@@ -149,5 +152,50 @@ def test_imu_and_sonar():
         expect = 1.0 - 0.08 - p.truth.pose.pose.position.x
         assert p.ranges[-1].range == pytest.approx(expect, abs=0.01), \
             f"sonar {p.ranges[-1].range:.3f} m after the walk, wall at {expect:.3f} m by ground truth"
+    finally:
+        p.close()
+
+
+def rpy(q):
+    roll = math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y))
+    pitch = math.asin(max(-1.0, min(1.0, 2 * (q.w * q.y - q.z * q.x))))
+    yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+    return roll, pitch, yaw
+
+
+def yaw_of(o):
+    return 2 * math.atan2(o.pose.pose.orientation.z, o.pose.pose.orientation.w)
+
+
+def test_ahrs_orientation():
+    p = Probe(0.05)
+    try:
+        p.spin_for(3.0)
+        assert p.imus and p.truth is not None, "no /imu/data or /sim/ground_truth"
+        m = p.imus[-1]
+        q = m.orientation
+        assert abs(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z - 1) < 1e-4, "not a unit quaternion"
+        # Roll and pitch declared at the filter's measured accuracy; yaw unanchored.
+        assert m.orientation_covariance[0] == pytest.approx(1.22e-5, rel=1e-3)
+        assert m.orientation_covariance[4] == pytest.approx(1.22e-5, rel=1e-3)
+        assert m.orientation_covariance[8] >= 1e5, "yaw has no magnetometer: it must not be declared absolute"
+        # Standing: the sensor's own tilt, the mount's (roll +1.0, pitch -1.5 deg).
+        n = len(p.imus)
+        p.spin_for(2.0)
+        tilts = [rpy(i.orientation) for i in p.imus[n:]]
+        roll = math.degrees(sum(t[0] for t in tilts) / len(tilts))
+        pitch = math.degrees(sum(t[1] for t in tilts) / len(tilts))
+        assert roll == pytest.approx(1.0, abs=0.3) and pitch == pytest.approx(-1.5, abs=0.3), \
+            f"standing roll {roll:+.2f} pitch {pitch:+.2f} deg, the mount is +1.0 / -1.5"
+        # A 3 s turn: the AHRS yaw follows the true yaw (the gyro alone: 1 % scale + bias).
+        y0, t0 = rpy(p.imus[-1].orientation)[2], yaw_of(p.truth)
+        p.spin_for(3.0, vx=0.0, wz=0.4)
+        p.send(0.0)
+        p.spin_for(2.0)
+        dyaw, dtruth = rpy(p.imus[-1].orientation)[2] - y0, yaw_of(p.truth) - t0
+        assert dtruth > 0.6, f"the robot did not turn: truth {dtruth:.3f} rad"
+        assert abs(dyaw - dtruth) < 0.05, f"AHRS turned {dyaw:.3f} rad, ground truth {dtruth:.3f} rad"
+        r, pt, _ = rpy(p.imus[-1].orientation)
+        assert math.degrees(r) == pytest.approx(1.0, abs=0.5) and math.degrees(pt) == pytest.approx(-1.5, abs=0.5)
     finally:
         p.close()

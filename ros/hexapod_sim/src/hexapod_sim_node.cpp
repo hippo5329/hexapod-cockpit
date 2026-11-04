@@ -1,12 +1,12 @@
 // The host simulator as a ROS 2 node: stands in for the firmware's base application.
 //
 // The same topics, rates and QoS as the firmware's sim mode, from the same models
-// (firmware/lib: hexa_world, hexa_sensors), stepped at the firmware's 50 Hz frame:
+// (firmware/lib: hexa_world, hexa_sensors, hexa_ahrs), stepped at the firmware's 50 Hz frame:
 //   /cmd_vel           in: Twist on Jazzy, TwistStamped on Lyrical, as the firmware is built
 //   /joint_states      25 Hz, the simulated servos' angles
 //   /odom/gait         25 Hz, gait odometry
 //   /sim/ground_truth   5 Hz, the body's true pose from the grounded feet (with slip)
-//   /imu/data          50 Hz, simulated QMI8658A: accel + gyro, no orientation (no AHRS yet)
+//   /imu/data          50 Hz, simulated QMI8658A: accel + gyro, orientation from the board's AHRS
 //   /sonar             10 Hz, simulated ultrasonic, cone raycast against the room's walls
 // all best effort; plus /sim/walls (latched markers of the room) for RViz.
 //
@@ -32,6 +32,7 @@
 #include <sensor_msgs/msg/range.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
+#include "hexa_ahrs.h"
 #include "hexa_sensors.h"
 #include "hexa_world.h"
 
@@ -65,6 +66,7 @@ public:
         const int seed = declare_parameter("seed", 5329);
         if (!robot_.init(slip)) throw std::runtime_error("neutral stance unreachable");
         imu_.init(hexa::ImuParams(), static_cast<uint32_t>(seed));
+        ahrs_.init();
         sonar_.init(hexa::RangeParams(), static_cast<uint32_t>(seed) * 2654435761u);
         hexa::default_room(walls_, static_cast<float>(room));
 
@@ -81,7 +83,8 @@ public:
         }
         truth_msg_.header.frame_id = "odom";
         truth_msg_.child_frame_id = "base_footprint";
-        // The simulated IMU declares the white noise it makes; no orientation (REP 145: -1).
+        // The simulated IMU declares the white noise it makes; the orientation is the AHRS's,
+        // unknown (REP 145: -1) until it has seeded.
         imu_msg_.header.frame_id = "imu_link";
         imu_msg_.orientation_covariance[0] = -1;
         for (int i = 0; i < 3; ++i) {
@@ -132,6 +135,7 @@ private:
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "gait fault: %d legs unreachable, %d pulses clamped",
                                  n.unreachable, n.clamped);
         const hexa::ImuSample m = imu_.step(kTickS, robot_.truth_twist());
+        ahrs_.update(m.gx, m.gy, m.gz, m.ax, m.ay, m.az, kTickS);
         ++frame_;
         if (frame_ % 2 == 0) publish();  // 25 Hz, as the firmware
         publish_imu(m);                  // 50 Hz
@@ -147,6 +151,16 @@ private:
         imu_msg_.angular_velocity.x = m.gx;
         imu_msg_.angular_velocity.y = m.gy;
         imu_msg_.angular_velocity.z = m.gz;
+        if (ahrs_.seeded()) {
+            const hexa::Quat& q = ahrs_.q();
+            imu_msg_.orientation.w = q.w;
+            imu_msg_.orientation.x = q.x;
+            imu_msg_.orientation.y = q.y;
+            imu_msg_.orientation.z = q.z;
+            // Roll and pitch levelled against gravity; yaw unanchored (no magnetometer).
+            imu_msg_.orientation_covariance[0] = imu_msg_.orientation_covariance[4] = ahrs_.params().roll_pitch_var;
+            imu_msg_.orientation_covariance[8] = ahrs_.params().yaw_var;
+        }
         imu_pub_->publish(imu_msg_);
     }
 
@@ -206,6 +220,7 @@ private:
 
     hexa::SimRobot robot_;
     hexa::SimImu imu_;
+    hexa::Ahrs ahrs_;
     hexa::SimRange sonar_;
     hexa::Wall walls_[hexa::kRoomWalls];
     std::chrono::steady_clock::time_point start_;

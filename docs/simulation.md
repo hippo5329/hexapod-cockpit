@@ -63,8 +63,8 @@ them; the native tests (`test_sensors`) check them. A simulated sensor behaves l
 declares the noise it actually makes: the white noise is uniform on ±peak, so its variance is peak²/3, and that
 is the covariance in the message, never a second constant.
 
-**IMU** (`/imu/data`, 50 Hz, frame `imu_link`): the QMI8658A, accelerometer and gyro. There is no magnetometer
-and no AHRS on the board yet, so the orientation is marked unknown (`orientation_covariance[0] = -1`).
+**IMU** (`/imu/data`, 50 Hz, frame `imu_link`): the QMI8658A, accelerometer and gyro, no magnetometer. The
+orientation is the board's AHRS ([firmware.md](firmware.md#ahrs)), run on these samples: below.
 
 | figure | value | basis |
 |---|---|---|
@@ -80,6 +80,18 @@ Standing still it reads about 9.90 m/s² on z and +0.23 to +0.24 m/s² on x: the
 the bias. Turning
 0.4 rad/s for 6 s, the integrated gyro is within 2 % of the true turn. Gait odometry claims 6 % more than the
 truth: the slip the IMU can see and the gait cannot. Walking, the tripod hand-overs show as ~0.6 m/s² jolts.
+
+**Orientation** (the AHRS on the simulated IMU; `test_ahrs`, and the board check on the bare ESP32):
+
+| | roll and pitch error, rms (worst) | yaw |
+|---|---|---|
+| standing 30 s | 0.145° (0.45°) | +0.012 rad: the gyro bias's integral |
+| turning 0.4 rad/s, 6 s | 0.160° (0.45°) | 2.289 rad against the true 2.260 (1 % scale error) |
+| walking 0.05 m/s, 30 s | 0.150° (0.50°) | +0.012 rad |
+
+The error is measured against the sensor's true tilt, the mount's: the model's body stays level. The declared
+(0.2°)² covers it. On the board, standing, the AHRS reads roll +0.9° and pitch −1.35° to −1.4°, the mount less the
+accelerometer's bias; a 3 s turn reads within 0.005 rad of ground truth.
 
 **Ultrasonic** (`/sonar`, 10 Hz, frame `sonar_link`, `sensor_msgs/Range`): a 15° cone, raycast against the
 walls of the world: by default a closed 2 m × 2 m room centred on the start pose (`room_half_size` on the
@@ -113,7 +125,7 @@ ros2 launch hexapod_sim sim.launch.py slip:=0.10   # another floor
 | `/joint_states` | `sensor_msgs/JointState` | the simulated servos' angles, 25 Hz, best effort |
 | `/odom/gait` | `nav_msgs/Odometry` | the gait odometry, exactly as the firmware computes it |
 | `/sim/ground_truth` | `nav_msgs/Odometry` | where the body really went (grounded feet, less slip), 5 Hz; `odom` frame, same origin |
-| `/imu/data` | `sensor_msgs/Imu` | the simulated QMI8658A, 50 Hz (above) |
+| `/imu/data` | `sensor_msgs/Imu` | the simulated QMI8658A, 50 Hz, with the AHRS's orientation (above) |
 | `/sonar` | `sensor_msgs/Range` | the simulated ultrasonic, 10 Hz (above) |
 | `/sim/walls` | `visualization_msgs/Marker` | the room's walls, latched, for RViz |
 
@@ -186,6 +198,8 @@ A test (`colcon test`) checks that the transform carries the message's pose, fra
 
 ## Not yet
 
-- An AHRS on the board (orientation in `/imu/data`), and the EKF that fuses it with `/odom/gait`.
+- The EKF that fuses `/imu/data` with `/odom/gait`.
+- A level calibration: the AHRS reports the sensor's tilt, mount included; the board could store the tilt it
+  reads standing on a level floor and subtract it.
 - Other worlds than the square room (obstacles, a saved map's walls).
 - Uneven ground, and body roll and pitch from leg compliance.

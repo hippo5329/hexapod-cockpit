@@ -20,6 +20,8 @@ The miniHexa has no robot computer on board, so the first setup runs the agent a
 - **base**: micro-ROS node. Subscribes `/cmd_vel` (Twist on Jazzy, TwistStamped on Lyrical) and `/body_pose`
   (height, roll, pitch, yaw of the body over the feet). Publishes `/imu/data`, `/sonar`, `/battery`,
   `/joint_states` (commanded angles: the servos give no feedback), `/odom/gait` (body motion from completed steps).
+- **AHRS on the controller**: Madgwick's 6-axis filter on every IMU sample, so `/imu/data` carries roll and
+  pitch against gravity; yaw is the gyro's integral, unanchored (no magnetometer).
 - **Gait engine on the controller**: tripod first, then ripple and wave. Body velocity → step length and
   direction per leg → foot trajectories → leg IK → servo pulses at 50 Hz. A lost `/cmd_vel` stream (timeout) ends
   the current step and stands, never freezes mid-stride.

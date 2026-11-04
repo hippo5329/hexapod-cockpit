@@ -6,7 +6,7 @@ for Lyrical, where `/cmd_vel` is a `TwistStamped`). Build and flash are separate
 
 ```
 pio run  -d firmware -e minihexa          # build
-pio test -d firmware -e native            # IK, gait, servo and sensor tests on the host
+pio test -d firmware -e native            # IK, gait, servo, sensor and AHRS tests on the host
 ```
 
 ## Layout
@@ -18,6 +18,7 @@ pio test -d firmware -e native            # IK, gait, servo and sensor tests on 
 | `lib/hexa_servo` | joint angle ↔ pulse, per-joint calibration, the simulated servo. Plain C++ |
 | `lib/hexa_world` | the robot model: gait, IK and pulses for both modes; in sim mode the simulated servos and the true pose from the feet. Plain C++ |
 | `lib/hexa_sensors` | the simulated IMU (QMI8658A) and ultrasonic. Plain C++ |
+| `lib/hexa_ahrs` | the AHRS: orientation from the IMU's gyro and accelerometer (below). Plain C++ |
 | `include/board_minihexa.h` | the controller board's pins. **Not identified yet** |
 | `src/main.cpp` | applications, micro-ROS, console |
 | `test/` | Unity tests, `native` env |
@@ -50,6 +51,32 @@ ESP32 the base application walks simulated servos and publishes their angles, pl
 and ground truth. In real mode `/joint_states` will carry the *commanded* angles, because a PWM servo reports
 nothing back, and no sensor is published until its bus and pins are read off the board.
 
+## AHRS
+
+The board fuses the IMU itself (`lib/hexa_ahrs`), so `/imu/data` carries an orientation and no filter node is
+needed on the host. It is Madgwick's gradient-descent filter for a 6-axis IMU, written from his 2010 report:
+the gyro rate is integrated, and each sample takes a step of fixed size β down the gradient of the error between
+the gravity the estimate predicts and the accelerometer's direction. It is the filter `imu_filter_madgwick` runs
+for an IMU without a magnetometer; driven with the same samples and seeded alike, the two agree to 2.4e-5 rad
+once the reference's fast inverse square root is replaced by an exact one (with it, the reference sits up to
+0.3° away standing still).
+
+- **Gain** β = 0.1, `imu_filter_madgwick`'s default: a 10° tilt step settles within 0.5° in 0.84 s. Unmeasured
+  on the robot.
+- **Seed**: the first sample sets roll and pitch from gravity, with yaw 0, so the first message is already
+  level. Until then `orientation_covariance[0]` is −1 (REP 145: no orientation).
+- **Roll and pitch** are absolute, levelled against gravity. They are the *sensor's*: a board mounted off level
+  reads its own tilt (the simulated one, roll 1.0° and pitch −1.5°, shows up as such). Declared variance
+  (0.2°)², from the filter's error in simulation.
+- **Yaw** is the gyro's integral from 0 at boot. The QMI8658A has no magnetometer, so nothing anchors it and it
+  drifts with the gyro's bias. Its declared variance is 10⁶: fuse the yaw *rate*, never this yaw as absolute.
+- **Robustness**: a gap over 0.5 s (a stalled loop) holds the estimate rather than integrating it as motion; a
+  zero or non-finite accelerometer falls back to the gyro; a non-finite gyro is skipped.
+- **Gravity stays in** `linear_acceleration` (REP 145): a consumer that wants motion removes it.
+
+It runs on every IMU sample, connected to an agent or not, at the 50 Hz frame (dt = 20 ms). The ROS 2 node runs
+the same code. A real QMI8658A will need dt from the sample timestamps.
+
 ## Topics
 
 | topic | type | notes |
@@ -57,7 +84,7 @@ nothing back, and no sensor is published until its bus and pins are read off the
 | `/cmd_vel` | `geometry_msgs/Twist` (Jazzy), `TwistStamped` (Lyrical) | `linear.x`, `linear.y`, `angular.z`; clamped to the stride limit |
 | `/joint_states` | `sensor_msgs/JointState` | 18 joints `rf_coxa` … `lf_tibia`; sim: simulated angle; real: commanded |
 | `/odom/gait` | `nav_msgs/Odometry` | integrated commanded body twist (dead reckoning, no slip); `odom` → `base_footprint` (as a TF by `hexapod_bringup`'s `gait_odom_tf`) |
-| `/imu/data` | `sensor_msgs/Imu` | sim mode: the simulated QMI8658A, 50 Hz, no orientation yet ([simulation.md](simulation.md)) |
+| `/imu/data` | `sensor_msgs/Imu` | sim mode: the simulated QMI8658A, 50 Hz ([simulation.md](simulation.md)), with the AHRS's orientation (below) |
 | `/sonar` | `sensor_msgs/Range` | sim mode: the simulated ultrasonic, 10 Hz |
 | `/sim/ground_truth` | `nav_msgs/Odometry` | sim mode: the true pose, 5 Hz |
 
