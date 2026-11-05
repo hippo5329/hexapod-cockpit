@@ -7,10 +7,11 @@ SLAM and Nav2 for six-legged walkers. Sister project of
 **Status: early.** The first target robot is the Hiwonder **miniHexa** Standard Kit (18 DOF, ESP32), described in
 [`docs/hardware-minihexa.md`](docs/hardware-minihexa.md). The plan is in [`docs/architecture.md`](docs/architecture.md).
 
-What runs today, without the robot:
-- **Firmware skeleton** ([`docs/firmware.md`](docs/firmware.md)): tripod gait, leg IK, an AHRS and micro-ROS
-  (`/cmd_vel` in; `/joint_states`, `/odom/gait` and `/imu/data` with orientation out). It drives simulated
-  servos and a simulated IMU until the board's pins are identified.
+What runs today:
+- **Firmware** ([`docs/firmware.md`](docs/firmware.md)): tripod gait, leg IK, an AHRS and micro-ROS over USB
+  serial or Wi-Fi, with OTA updates (`/cmd_vel` in; `/joint_states`, `/odom/gait`, `/imu/data` with
+  orientation, `/sonar` and `/battery` out). On the robot it drives the 18 servos and reads the real IMU,
+  ultrasonic and battery; on a bare ESP32 it walks a simulated robot with simulated sensors.
 - **Host simulator** ([`docs/simulation.md`](docs/simulation.md)): the same gait code walking simulated servos, with
   true pose vs gait odometry. Run it with `make -C sim run`.
 - **Robot model** (`ros/hexapod_description`): URDF and RViz view of the miniHexa, tested against the firmware's
