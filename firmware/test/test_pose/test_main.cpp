@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 
 #include "hexa_world.h"
 
@@ -35,8 +36,9 @@ static void test_pose_transform_round_trips() {
     TEST_ASSERT_TRUE(to_posed_body({0, 0, 0, 0, 0.2f, 0}, f).z > f.z);
 }
 
-// Every corner of the limits (64), standing: reached without an unreachable foot or a clamped
-// pulse, the feet staying on their spots, and the body not walking anywhere.
+// Every corner of the limits (64), standing: gone to as far as the legs reach (each axis alone to
+// its limit, below), never an unreachable foot or a clamped pulse on the way, the feet staying on
+// their spots, and the body not walking anywhere.
 static void test_every_corner_standing() {
     for (int c = 0; c < 64; ++c) {
         SimRobot r;
@@ -51,6 +53,7 @@ static void test_every_corner_standing() {
             TEST_ASSERT_EQUAL_INT_MESSAGE(0, n.clamped, msg);
         }
         TEST_ASSERT_TRUE(r.pose_settled());
+        TEST_ASSERT_TRUE(std::fabs(r.pose().roll) > 0.5f * PoseLimits().angle);  // it went a good way
         const Geometry& g = minihexa_geometry();
         for (int leg = 0; leg < kLegs; ++leg) {
             const Vec3 b = leg_fk(g, leg, {r.commanded(leg * 3), r.commanded(leg * 3 + 1), r.commanded(leg * 3 + 2)});
@@ -66,7 +69,27 @@ static void test_every_corner_standing() {
     }
 }
 
-// Walking at top speed with the pose at every corner: every foot reachable.
+// Each axis alone reaches its limit standing.
+static void test_each_axis_reaches_its_limit() {
+    const PoseLimits l;
+    const float lim[6] = {l.xy, l.xy, l.z, l.angle, l.angle, l.angle};
+    for (int ax = 0; ax < 6; ++ax)
+        for (float sgn : {-1.0f, 1.0f}) {
+            float v[6] = {0, 0, 0, 0, 0, 0};
+            v[ax] = sgn * lim[ax];
+            SimRobot r;
+            TEST_ASSERT_TRUE(r.init());
+            r.set_pose({v[0], v[1], v[2], v[3], v[4], v[5]});
+            float t = 0;
+            for (int i = 0; i < 100; ++i, t += kDt) r.step(kDt, t);
+            const BodyPose& p = r.pose();
+            const float got[6] = {p.x, p.y, p.z, p.roll, p.pitch, p.yaw};
+            TEST_ASSERT_FLOAT_WITHIN(1e-5f, v[ax], got[ax]);
+        }
+}
+
+// Walking at top speed with the pose at every corner (kept at its walking share): every foot
+// reachable.
 static void test_every_corner_walking() {
     int worst = 0, worst_c = -1;
     for (int c = 0; c < 64; ++c) {
@@ -113,6 +136,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_pose_transform_round_trips);
     RUN_TEST(test_every_corner_standing);
+    RUN_TEST(test_each_axis_reaches_its_limit);
     RUN_TEST(test_every_corner_walking);
     RUN_TEST(test_rest_eases_the_pose_and_rates_hold);
     return UNITY_END();

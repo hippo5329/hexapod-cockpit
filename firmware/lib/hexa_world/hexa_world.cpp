@@ -73,11 +73,32 @@ Vec3 from_posed_body(const BodyPose& p, const Vec3& b) {
     return {v.x + p.x, v.y + p.y, v.z + p.z};
 }
 
-bool SimRobot::pose_settled() const {
-    const BodyPose& a = pose_;
-    const BodyPose& b = pose_target_;
-    return rest_s_ == 0 && a.x == b.x && a.y == b.y && a.z == b.z && a.roll == b.roll && a.pitch == b.pitch &&
-           a.yaw == b.yaw;
+// Where leg's foot goes in the stance frame this tick: the gait's, drawn in for lying down.
+Vec3 SimRobot::foot_target(int leg, float r) const {
+    Vec3 f = gait_.foot(leg);
+    if (r > 0) {
+        // Resting only from a stance: the feet are on their neutral spots.
+        const Hip& h = g_->hip[leg];
+        const float k = rp_.reach / g_->neutral_reach;
+        const Vec3 down{h.x + (f.x - h.x) * k, h.y + (f.y - h.y) * k, rp_.z};
+        f = {f.x + (down.x - f.x) * r, f.y + (down.y - f.y) * r, f.z + (down.z - f.z) * r};
+    }
+    return f;
+}
+
+// Every foot reachable, with no pulse clamped, through this pose.
+bool SimRobot::feet_fit(const BodyPose& applied, float r) const {
+    for (int leg = 0; leg < kLegs; ++leg) {
+        LegAngles a;
+        if (!leg_ik(*g_, leg, to_posed_body(applied, foot_target(leg, r)), &a)) return false;
+        const float ang[3] = {a.coxa, a.femur, a.tibia};
+        for (int j = 0; j < 3; ++j) {
+            bool cl = false;
+            angle_to_us(cal_[leg * 3 + j], ang[j], &cl);
+            if (cl) return false;
+        }
+    }
+    return true;
 }
 
 bool SimRobot::init(double slip, const GaitParams& gp, const SimServoParams& sp) {
@@ -132,27 +153,31 @@ StepCounts SimRobot::step(float dt, float now_s) {
     const float r = rest_s_ * rest_s_ * (3 - 2 * rest_s_);  // smoothstep: no jerk at either end
     const BodyTwist ap = gait_.applied();
     odom_.apply_body(ap.vx * dt, ap.vy * dt, ap.wz * dt);
-    // The pose moves toward its target at the limits' rates, and is eased out while lying down
-    // (the rest pose is a neutral body's).
+    // The pose moves toward its target (a share of it while walking) at the limits' rates, only as
+    // far as the feet fit, and is eased out while lying down (the rest pose is a neutral body's).
     const PoseLimits lim;
-    const float ds = lim.speed * dt, da = lim.turn * dt;
-    pose_ = {approach(pose_.x, pose_target_.x, ds),        approach(pose_.y, pose_target_.y, ds),
-             approach(pose_.z, pose_target_.z, ds),        approach(pose_.roll, pose_target_.roll, da),
-             approach(pose_.pitch, pose_target_.pitch, da), approach(pose_.yaw, pose_target_.yaw, da)};
+    const float ds = lim.speed * dt, da = lim.turn * dt, w = gait_.standing() ? 1.0f : lim.walking;
+    const BodyPose& t = pose_target_;
+    const BodyPose next = {approach(pose_.x, t.x * w, ds),        approach(pose_.y, t.y * w, ds),
+                           approach(pose_.z, t.z * w, ds),        approach(pose_.roll, t.roll * w, da),
+                           approach(pose_.pitch, t.pitch * w, da), approach(pose_.yaw, t.yaw * w, da)};
     const float keep = 1 - r;
-    pose_applied_ = {pose_.x * keep, pose_.y * keep, pose_.z * keep, pose_.roll * keep, pose_.pitch * keep, pose_.yaw * keep};
+    auto scaled = [keep](const BodyPose& p) {
+        return BodyPose{p.x * keep, p.y * keep, p.z * keep, p.roll * keep, p.pitch * keep, p.yaw * keep};
+    };
+    const BodyPose before = pose_applied_;
+    // Toward the target only if the feet fit there; moving back toward neutral (smaller) always.
+    auto norm = [](const BodyPose& p) {
+        return std::fabs(p.x) + std::fabs(p.y) + std::fabs(p.z) + std::fabs(p.roll) + std::fabs(p.pitch) + std::fabs(p.yaw);
+    };
+    if (norm(next) <= norm(pose_) || feet_fit(scaled(next), r)) pose_ = next;
+    pose_applied_ = scaled(pose_);
+    pose_moved_ = before.x != pose_applied_.x || before.y != pose_applied_.y || before.z != pose_applied_.z ||
+                  before.roll != pose_applied_.roll || before.pitch != pose_applied_.pitch || before.yaw != pose_applied_.yaw;
 
     for (int leg = 0; leg < kLegs; ++leg) {
         LegAngles a;
-        Vec3 f = gait_.foot(leg);
-        if (r > 0) {
-            // Resting only from a stance: the feet are on their neutral spots.
-            const Hip& h = g_->hip[leg];
-            const float k = rp_.reach / g_->neutral_reach;
-            const Vec3 down{h.x + (f.x - h.x) * k, h.y + (f.y - h.y) * k, rp_.z};
-            f = {f.x + (down.x - f.x) * r, f.y + (down.y - f.y) * r, f.z + (down.z - f.z) * r};
-        }
-        f = to_posed_body(pose_applied_, f);
+        const Vec3 f = to_posed_body(pose_applied_, foot_target(leg, r));
         if (!leg_ik(*g_, leg, f, &a)) { ++n.unreachable; continue; }
         const float ang[3] = {a.coxa, a.femur, a.tibia};
         for (int j = 0; j < 3; ++j) {

@@ -55,8 +55,11 @@ struct StepCounts {
 // Body pose: the body shifted (x forward, y left, z up, m) and turned (roll, pitch, yaw, rad: yaw
 // about z, then pitch about y, then roll about x) over feet that stay where the gait puts them,
 // standing or walking. Every foot target goes through the inverse before the IK. Asked-for poses
-// are clamped to PoseLimits and reached at its rates (no jerk on the servos); lying down (idle or
-// the final shutdown) eases the pose out first and back in after.
+// are clamped to PoseLimits and reached at its rates (no jerk on the servos), and only as far as
+// every foot stays reachable with no pulse clamped: each axis alone reaches its limit standing,
+// all six at once about 70 % of them, so a combined pose stops where the legs end. While walking
+// the target is scaled to `walking` (every corner reachable at top speed). Lying down (idle or the
+// final shutdown) eases the pose out first and back in after.
 struct BodyPose {
     float x = 0, y = 0, z = 0, roll = 0, pitch = 0, yaw = 0;
 };
@@ -65,6 +68,7 @@ struct PoseLimits {
     float angle = 0.2618f;          // rad (15 deg), each of roll, pitch, yaw
     float speed = 0.04f;            // m/s
     float turn = 0.5f;              // rad/s
+    float walking = 0.2f;           // the share of the pose kept while the gait walks
 };
 BodyPose clamp_pose(const BodyPose& p, const PoseLimits& l = PoseLimits());
 // The foot target f (stance frame: where the neutral body's feet are) seen from the posed body.
@@ -101,7 +105,8 @@ public:
     void set_pose(const BodyPose& p) { pose_target_ = clamp_pose(p); }
     const BodyPose& pose_target() const { return pose_target_; }
     const BodyPose& pose() const { return pose_applied_; }
-    bool pose_settled() const;
+    // The pose did not move this tick (the gyro's bias may be learned).
+    bool pose_settled() const { return !pose_moved_; }
     // 0 standing .. 1 lying down.
     float rest_level() const { return rest_s_; }
     bool resting() const { return rest_s_ >= 1.0f; }
@@ -146,6 +151,9 @@ private:
     BodyTwist truth_twist_{0, 0, 0};
     RestParams rp_;
     BodyPose pose_target_, pose_, pose_applied_;
+    bool pose_moved_ = false;
+    bool feet_fit(const BodyPose& applied, float rest) const;
+    Vec3 foot_target(int leg, float rest) const;
     bool rest_want_ = false;
     float rest_s_ = 0;
 };
