@@ -70,6 +70,7 @@ firmware (`tools/make_nvs.py <settings file> <out.bin>`, flashed at 0x9000; OTA 
 | `idle_s` | seconds without a command that moves before the robot lies down (Gait, below), 0-3600; default 30; `0`: never |
 | `low_bat_mv` | the final shutdown's battery floor (Shutdown, below) in mV, 5600-8000; default 6400 (3.2 V a cell); `0`: never |
 | `syslog_ip`, `syslog_port` | the UDP syslog sink (Syslog, below); port default 5140; none: no syslog |
+| `yaw_hold` | heading hold / turn-rate feedback gain (Gait, below), 1/s, 0-5; default 1.0; `0`: off |
 | `imu_level` | `roll,pitch` in degrees (each within ±10): how the IMU sits on its board, read with the body level (a level on the top plate) from the console's `imu`. Every IMU sample is turned into the body frame with it; none: the board is taken as level |
 
 The settings file carries the Wi-Fi key and the OTA password: keep it private (mode 0600) and out of any
@@ -79,7 +80,7 @@ firmware replaces it.
 **Over Wi-Fi, without USB**, `tools/push_settings.py <board IP> <settings file> <password file>` changes
 settings on a board that has OTA. The file has the same lines, only the keys to change; the others stay. An
 empty value (`trims=`) removes a key that has a default (`app`, `sim`, `port`, `trims`, `imu_level`,
-`idle_s`, `low_bat_mv`, `syslog_ip`, `syslog_port`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
+`idle_s`, `low_bat_mv`, `syslog_ip`, `syslog_port`, `yaw_hold`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
 line) and its MD5 check, into the unused `spiffs` partition. The board reboots, and the robot stands in its
 boot pose. Before anything reads NVS, the board checks every line (`lib/hexa_settings`, the rules of
 `make_nvs.py`). It writes the keys only if all pass, then erases the upload, so the upload is applied once.
@@ -149,6 +150,12 @@ stride; top speed 57 mm/s. Measured by the gyro and a camera against the earlier
 turns reach 65-68 % of the command instead of 38-41 %, straight lines 67 % instead of 53 % (hard feet slip on
 tile; `/odom/gait` integrates the command, so it reads long by that much). A slower cycle takes fewer, longer
 steps per metre, so fewer touchdowns skid; more overlap helps a little; a higher lift did not.
+
+**Heading hold.** The feet slip, so open loop a straight walk drifts (up to -0.24 rad in 20 s on tile) and a turn
+makes 60-65 % of its rate. While the gait walks, the board integrates (commanded - measured) yaw rate from the
+bias-corrected gyro (sim or real) and adds `yaw_hold` (NVS, default 1.0 /s; `0`: off) times that heading lost to the
+gait's yaw rate, the error capped at 0.3 rad and the trim at 0.25 rad/s, reset while standing. `/odom/gait` keeps
+the commanded yaw rate: the trim only makes the body turn as commanded. The `health` line shows the heading lost.
 
 **Cadence.** `period_s` is the fastest cycle, the one top speed needs. Asked for less, the gait slows its cycle,
 up to `max_period_s` (3.0 s), so that the stride stays at 95 % of the longest: a step costs the servos about the

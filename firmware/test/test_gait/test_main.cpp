@@ -182,6 +182,42 @@ static void test_tiny_command_does_not_step() {
     }
 }
 
+// A plant that turns 60 % of the gait's yaw rate and drifts -0.012 rad/s (slip, as on tile): walk
+// `cmd` for `seconds` with or without YawHold; returns the body's heading change.
+static float walk_with_slip(const BodyTwist& cmd, float seconds, bool hold, float* odom_wz_mean) {
+    gait.init(&minihexa_geometry(), params);
+    YawHold yh;
+    float t = 0, yaw = 0, gz = 0, odom = 0;
+    int n = 0;
+    for (float s = 0; s < seconds; s += kDt, t += kDt) {
+        gait.command(cmd, t);
+        gait.set_yaw_trim(yh.update(gait.commanded().wz, gz, hold && !gait.standing(), kDt));
+        gait.step(kDt, t);
+        gz = gait.standing() ? 0.0f : 0.6f * gait.target().wz - 0.012f;
+        yaw += gz * kDt;
+        odom += gait.applied().wz;
+        ++n;
+    }
+    *odom_wz_mean = odom / n;
+    return yaw;
+}
+
+// YawHold keeps a straight walk's heading against slip drift, makes a turn reach its commanded
+// rate, and leaves the gait's odometry (applied()) on the commanded rate either way.
+static void test_yaw_hold_holds_heading_and_turn_rate() {
+    float odom;
+    const float drift = walk_with_slip({0.05f, 0, 0}, 20, false, &odom);
+    TEST_ASSERT_TRUE(drift < -0.2f);  // without: -0.24 rad, as the robot drifted
+    const float held = walk_with_slip({0.05f, 0, 0}, 20, true, &odom);
+    TEST_ASSERT_FLOAT_WITHIN(0.03f, 0.0f, held);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, odom);  // odometry: no turn, as commanded
+    const float open = walk_with_slip({0, 0, 0.3f}, 10, false, &odom);
+    TEST_ASSERT_FLOAT_WITHIN(0.15f, 0.6f * 3.0f - 0.12f, open);  // ~55 % of the turn
+    const float closed = walk_with_slip({0, 0, 0.3f}, 10, true, &odom);
+    TEST_ASSERT_FLOAT_WITHIN(0.12f, 3.0f, closed);  // the commanded 3 rad, less the first second's lag
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.3f, odom);
+}
+
 // A lost command stream (no zero ever sent) also ends in a stand.
 static void test_command_timeout_stands() {
     float t = 0;
@@ -230,6 +266,7 @@ int main() {
     RUN_TEST(test_stop_settles_for_every_duty_and_period);
     RUN_TEST(test_slow_walk_takes_fewer_longer_steps);
     RUN_TEST(test_tiny_command_does_not_step);
+    RUN_TEST(test_yaw_hold_holds_heading_and_turn_rate);
     RUN_TEST(test_command_timeout_stands);
     RUN_TEST(test_params_only_while_standing);
     return UNITY_END();

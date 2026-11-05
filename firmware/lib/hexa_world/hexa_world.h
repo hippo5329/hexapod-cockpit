@@ -74,6 +74,8 @@ public:
     void command(const BodyTwist& cmd, float now_s);
     // Lie down (taken once the gait stands) or stand up again.
     void rest(bool on) { rest_want_ = on; }
+    // YawHold's trim (TripodGait::set_yaw_trim).
+    void set_yaw_trim(float wz) { gait_.set_yaw_trim(wz); }
     // 0 standing .. 1 lying down.
     float rest_level() const { return rest_s_; }
     bool resting() const { return rest_s_ >= 1.0f; }

@@ -174,6 +174,10 @@ bool real_imu = false;
 // command that moves, the robot lies down on its belly; the next command that moves stands it
 // up, then walks. From boot too: a robot left on lies down after idle_s.
 uint32_t idle_s = 30;
+
+// Heading hold / turn-rate feedback (hexa_gait.h YawHold) from the bias-corrected gyro, sim or
+// real; NVS "yaw_hold" (gain 1/s, default 1.0; 0 off).
+YawHold yaw_hold;
 float last_move_s = 0;
 
 // The final shutdown: lying down once it is asked for (its reason), then deep sleep. Nothing
@@ -219,6 +223,9 @@ float sonar_clamped(float metres) {
 void robot_tick(float now_s) {
     if (gait_pending && robot.set_gait_params(pending_gait)) gait_pending = false;
     if (shutdown_why || (idle_s && now_s - last_move_s > idle_s)) robot.rest(true);
+    // The last tick's gyro sample against what the gait is asked to turn.
+    const bool walking = !robot.gait().standing() && robot.rest_level() == 0 && (sim_mode || real_imu);
+    robot.set_yaw_trim(yaw_hold.update(robot.gait().commanded().wz, imu_sample.gz, walking, kTickS));
     unreachable += robot.step(kTickS, now_s).unreachable;
     if (sim_mode) {
         imu_sample = sim_imu.step(kTickS, robot.truth_twist());
@@ -659,11 +666,11 @@ void base_loop() {
         last_report = t_start;
         hexa_log::log(hexa_log::kInfo,
                       "health: battery %d mV  rssi %d dBm  sessions %u  loop max %u ms  late ticks %u  gait %s  "
-                      "cycle %.2f s  sonar %.2f m  unreachable %u",
+                      "cycle %.2f s  yaw lost %+.3f rad  sonar %.2f m  unreachable %u",
                       battery_mv, static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(sessions),
                       static_cast<unsigned>(loop_max_ms), static_cast<unsigned>(late_ticks),
                       robot.resting() ? "lying" : robot.rest_level() > 0 ? "between" : robot.gait().standing() ? "standing" : "walking",
-                      robot.gait().period(), sonar_msg.range, static_cast<unsigned>(unreachable));
+                      robot.gait().period(), yaw_hold.error(), sonar_msg.range, static_cast<unsigned>(unreachable));
         loop_max_ms = late_ticks = 0;
     }
     agent_step();
@@ -741,6 +748,7 @@ void console_info() {
     Serial.printf("gait period %.2f-%.2f s (in use %.2f)  duty %.2f  lift %.3f m  max stride %.3f m%s\n", gp.period_s,
                   gp.max_period_s, robot.gait().period(), gp.duty, gp.lift, gp.max_stride,
                   gait_pending ? "  (new ones pending: applied when it stands)" : "");
+    Serial.printf("yaw hold gain %.2f /s (0: off)\n", yaw_hold.params().gain);
     Serial.printf("idle rest after %u s (0: never)  now %s\n", static_cast<unsigned>(idle_s),
                   robot.resting() ? "lying down" : robot.rest_level() > 0 ? "between" : "up");
     Serial.printf("shutdown when the battery stays under %d mV for 30 s (0: never)  battery %d mV\n",
@@ -919,6 +927,12 @@ void setup() {
     if (!idle_str.isEmpty()) {
         if (parse_int(idle_str, &idle) && idle >= 0 && idle <= 3600) idle_s = static_cast<uint32_t>(idle);
         else Serial.println("idle_s: NVS value refused, 30 s used");
+    }
+    const String yaw_str = prefs.getString("yaw_hold", "");
+    if (!yaw_str.isEmpty()) {
+        const float g = yaw_str.toFloat();
+        if (g >= 0 && g <= 5) yaw_hold.set_gain(g);
+        else Serial.println("yaw_hold: NVS value refused, 1.0 used");
     }
     long low_bat = 6400;
     const String low_bat_str = prefs.getString("low_bat_mv", "");

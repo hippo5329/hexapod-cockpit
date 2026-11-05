@@ -64,6 +64,7 @@ void TripodGait::command(const BodyTwist& cmd, float now_s) {
             period_ = std::fmin(p_.max_period_s, std::fmax(p_.period_s, 0.95f * p_.max_stride / (p_.duty * v)));
     }
     cmd_ = clamp(raw_);
+    odom_ = cmd_;
     cmd_time_ = now_s;
 }
 
@@ -99,7 +100,7 @@ bool TripodGait::settled() const {
 
 BodyTwist TripodGait::applied() const {
     if (standing_) return {0, 0, 0};
-    return cmd_;
+    return odom_;
 }
 
 void TripodGait::step(float dt, float now_s) {
@@ -112,7 +113,10 @@ void TripodGait::step(float dt, float now_s) {
         const float want = std::fmin(p_.max_period_s, std::fmax(p_.period_s, 0.95f * p_.max_stride / (p_.duty * v)));
         period_ += (want - period_) * std::fmin(1.0f, dt / period_);
     }
-    cmd_ = clamp(raw_);
+    BodyTwist eff = raw_;
+    if (v > 0) eff.wz += trim_wz_;  // the trim only while there is a command to walk
+    cmd_ = clamp(eff);
+    odom_ = {cmd_.vx, cmd_.vy, clamp(raw_).wz};
     const bool moving = std::fabs(cmd_.vx) > kZeroCmd || std::fabs(cmd_.vy) > kZeroCmd ||
                         std::fabs(cmd_.wz) > kZeroCmd;
     if (!moving && settled()) {

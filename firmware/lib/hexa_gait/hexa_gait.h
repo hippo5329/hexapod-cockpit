@@ -35,6 +35,40 @@ struct BodyTwist {
     float vx, vy, wz;  // m/s, m/s, rad/s, body frame
 };
 
+// Heading hold and turn-rate feedback from the gyro: the feet slip, so a straight walk drifts (up
+// to -0.24 rad in 20 s on tile) and a turn makes 60-65 % of its rate. The integral of (commanded -
+// measured) yaw rate while walking is the heading lost; a trim of gain x that (capped) is added to
+// the gait's yaw rate (TripodGait::set_yaw_trim). Reset while standing. Gain 0: off.
+struct YawHoldParams {
+    float gain = 1.0f;       // 1/s: trim (rad/s) per rad of heading lost
+    float max_error = 0.3f;  // rad, the integral's cap (no wind-up against a wall)
+    float max_trim = 0.25f;  // rad/s
+};
+
+class YawHold {
+public:
+    explicit YawHold(const YawHoldParams& p = YawHoldParams()) : p_(p) {}
+    void set_gain(float g) { p_.gain = g; }
+    const YawHoldParams& params() const { return p_; }
+    // One tick: the commanded and the measured (bias-corrected gyro) yaw rate, whether the gait
+    // walks. Returns the trim.
+    float update(float wz_cmd, float wz_meas, bool walking, float dt) {
+        if (!walking || p_.gain <= 0) {
+            err_ = 0;
+            return 0;
+        }
+        err_ += (wz_cmd - wz_meas) * dt;
+        err_ = err_ > p_.max_error ? p_.max_error : err_ < -p_.max_error ? -p_.max_error : err_;
+        const float t = p_.gain * err_;
+        return t > p_.max_trim ? p_.max_trim : t < -p_.max_trim ? -p_.max_trim : t;
+    }
+    float error() const { return err_; }  // rad: the heading lost so far this walk
+
+private:
+    YawHoldParams p_;
+    float err_ = 0;
+};
+
 class TripodGait {
 public:
     void init(const Geometry* g, const GaitParams& p);
@@ -65,6 +99,12 @@ public:
     const BodyTwist& target() const { return cmd_; }
     // The cycle in use (adaptive cadence: period_s .. max_period_s).
     float period() const { return period_; }
+    // The command as given (after the dead band; before the stride clamp and the yaw trim).
+    const BodyTwist& commanded() const { return raw_; }
+    // A yaw rate added to what the feet do while the gait walks (YawHold's correction for slip);
+    // applied(), the gait's odometry, leaves it out: the trim makes the body turn as commanded,
+    // so the commanded turn is what odometry should integrate.
+    void set_yaw_trim(float wz) { trim_wz_ = wz; }
 
 private:
     float leg_phase(int leg) const;
@@ -75,7 +115,9 @@ private:
     const Geometry* g_ = nullptr;
     GaitParams p_;
     BodyTwist raw_{0, 0, 0};  // as commanded (after the dead band)
-    BodyTwist cmd_{0, 0, 0};  // clamped to what the stride allows at the current cycle
+    BodyTwist cmd_{0, 0, 0};  // + the yaw trim, clamped to what the stride allows at the current cycle
+    BodyTwist odom_{0, 0, 0}; // what applied() reports: cmd_'s translation, the commanded yaw rate
+    float trim_wz_ = 0;
     float period_ = 1.5f;
     float cmd_time_ = -1e9f;
     float phase_ = 0.0f;

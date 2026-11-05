@@ -57,7 +57,7 @@ bool is_ipv4(const std::string& s) {
 }
 
 bool removable(const std::string& key) {
-    for (const char* k : {"app", "sim", "port", "trims", "imu_level", "idle_s", "low_bat_mv", "syslog_ip", "syslog_port"})
+    for (const char* k : {"app", "sim", "port", "trims", "imu_level", "idle_s", "low_bat_mv", "syslog_ip", "syslog_port", "yaw_hold"})
         if (key == k) return true;
     return false;
 }
@@ -78,6 +78,7 @@ std::string check(const std::string& key, const std::string& v) {
     if (key == "port") return is_unsigned(v, 1, 65535) ? "" : "port must be 1-65535";
     if (key == "ota_pw") return v.size() <= 64 ? "" : "ota_pw is too long";
     if (key == "idle_s") return is_unsigned(v, 0, 3600) ? "" : "idle_s must be 0-3600 (seconds)";
+    if (key == "yaw_hold") return v[0] != '-' && is_float(v, 5) ? "" : "yaw_hold must be a gain 0-5 (1/s)";
     if (key == "syslog_ip") return is_ipv4(v) ? "" : "syslog_ip must be an IPv4 address";
     if (key == "syslog_port") return is_unsigned(v, 1, 65535) ? "" : "syslog_port must be 1-65535";
     if (key == "low_bat_mv")
