@@ -28,6 +28,7 @@
 #include <rclc/rclc.h>
 #include <rmw_microros/rmw_microros.h>
 #include <nav_msgs/msg/odometry.h>
+#include <sensor_msgs/msg/battery_state.h>
 #include <sensor_msgs/msg/imu.h>
 #include <sensor_msgs/msg/joint_state.h>
 #include <sensor_msgs/msg/range.h>
@@ -149,7 +150,7 @@ rcl_allocator_t allocator;
 rcl_node_t node;
 rclc_executor_t executor;
 rcl_subscription_t cmd_sub;
-rcl_publisher_t joint_pub, odom_pub, imu_pub, sonar_pub, truth_pub;
+rcl_publisher_t joint_pub, odom_pub, imu_pub, sonar_pub, truth_pub, battery_pub;
 #ifdef HEXA_CMD_VEL_STAMPED
 geometry_msgs__msg__TwistStamped cmd_msg;
 #else
@@ -159,6 +160,7 @@ sensor_msgs__msg__JointState joint_msg;
 nav_msgs__msg__Odometry odom_msg, truth_msg;
 sensor_msgs__msg__Imu imu_msg;
 sensor_msgs__msg__Range sonar_msg;
+sensor_msgs__msg__BatteryState battery_msg;
 rosidl_runtime_c__String joint_names[kJoints];
 double joint_pos[kJoints];
 
@@ -205,6 +207,17 @@ void msgs_init() {
     sonar_msg.field_of_view = sim_sonar.params().fov;
     sonar_msg.min_range = sim_sonar.params().min_range;
     sonar_msg.max_range = sim_sonar.params().max_range;
+    // The real pack (2S Li-ion) in both modes, read off the board's monitor: only the voltage is
+    // known; everything the board cannot measure is NaN or unknown (sensor_msgs/BatteryState).
+    set_string(&battery_msg.header.frame_id, "base_link");
+    set_string(&battery_msg.location, "");
+    set_string(&battery_msg.serial_number, "");
+    battery_msg.current = battery_msg.charge = battery_msg.capacity = NAN;
+    battery_msg.design_capacity = battery_msg.percentage = battery_msg.temperature = NAN;
+    battery_msg.power_supply_status = sensor_msgs__msg__BatteryState__POWER_SUPPLY_STATUS_UNKNOWN;
+    battery_msg.power_supply_health = sensor_msgs__msg__BatteryState__POWER_SUPPLY_HEALTH_UNKNOWN;
+    battery_msg.power_supply_technology = sensor_msgs__msg__BatteryState__POWER_SUPPLY_TECHNOLOGY_LION;
+    battery_msg.present = true;
 }
 
 bool entities_create() {
@@ -222,6 +235,9 @@ bool entities_create() {
         return false;
     if (rclc_publisher_init_best_effort(&odom_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry),
                                         "odom/gait") != RCL_RET_OK)
+        return false;
+    if (rclc_publisher_init_best_effort(&battery_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, BatteryState),
+                                        "battery") != RCL_RET_OK)
         return false;
     if (sim_mode) {
         if (rclc_publisher_init_best_effort(&imu_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
@@ -250,6 +266,7 @@ void entities_destroy() {
         rcl_publisher_fini(&sonar_pub, &node);
         rcl_publisher_fini(&imu_pub, &node);
     }
+    rcl_publisher_fini(&battery_pub, &node);
     rcl_publisher_fini(&odom_pub, &node);
     rcl_publisher_fini(&joint_pub, &node);
     rcl_subscription_fini(&cmd_sub, &node);
@@ -319,6 +336,15 @@ void publish_imu() {
         imu_msg.orientation_covariance[8] = ahrs.params().yaw_var;
     }
     rcl_publish(&imu_pub, &imu_msg, nullptr);
+}
+
+// 1 Hz: the board's battery monitor (I2C, ~1 ms); a board without one publishes nothing.
+void publish_battery() {
+    const int mv = board_io::battery_i2c_mv();
+    if (mv <= 0) return;
+    stamp(&battery_msg.header.stamp);
+    battery_msg.voltage = mv / 1000.0f;
+    rcl_publish(&battery_pub, &battery_msg, nullptr);
 }
 
 void publish_sonar() {
@@ -413,6 +439,7 @@ void base_loop() {
         // fell, and on Lyrical the loop sometimes hung (the watchdog in setup() now resets it).
         if (agent == Agent::kConnected) {
             if (frame % 2 == 0) publish_state();  // 25 Hz: joint_states 452 B, odom 732 B
+            if (frame % 50 == 25) publish_battery();  // 1 Hz, ~100 B
             if (sim_mode) {
                 publish_imu();                              // 50 Hz, 332 B
                 if (frame % 5 == 0) publish_sonar();        // 10 Hz, 56 B: an HC-SR04's pace
