@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
         {"too_fast", {0.5f, 0, 0}, 4},  // clamped by the stride limit
     };
     const float dt = 0.02f;  // the firmware's 50 Hz servo frame
-    const float settle_limit = 2.0f * gp.period_s;
+    const float settle_limit = 2.0f * gp.max_period_s;  // adaptive cadence: a slow walk stops on a slow cycle
     float t = 0;
     int failures = 0;
 

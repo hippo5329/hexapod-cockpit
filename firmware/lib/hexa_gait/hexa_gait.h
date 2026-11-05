@@ -23,6 +23,12 @@ struct GaitParams {
     float lift = 0.030f;        // swing height
     float max_stride = 0.060f;  // longest stance travel of any foot
     float cmd_timeout_s = 0.5f; // a command older than this counts as zero
+    // Adaptive cadence: period_s is the fastest cycle (top speed). Asked for less, the cycle slows,
+    // up to max_period_s, so the stride stays near max_stride and the robot takes fewer steps
+    // per metre (each step costs the servos the same, the distance it covers does not). A
+    // command that moves no foot faster than min_foot_speed is zero: no stepping on the spot.
+    float max_period_s = 3.0f;
+    float min_foot_speed = 0.002f;  // m/s
 };
 
 struct BodyTwist {
@@ -57,15 +63,20 @@ public:
 
     // The clamped command (what the gait is asked for, even while it settles).
     const BodyTwist& target() const { return cmd_; }
+    // The cycle in use (adaptive cadence: period_s .. max_period_s).
+    float period() const { return period_; }
 
 private:
     float leg_phase(int leg) const;
     BodyTwist clamp(const BodyTwist& c) const;
+    float worst_foot_speed(const BodyTwist& c) const;
     bool settled() const;
 
     const Geometry* g_ = nullptr;
     GaitParams p_;
-    BodyTwist cmd_{0, 0, 0};
+    BodyTwist raw_{0, 0, 0};  // as commanded (after the dead band)
+    BodyTwist cmd_{0, 0, 0};  // clamped to what the stride allows at the current cycle
+    float period_ = 1.5f;
     float cmd_time_ = -1e9f;
     float phase_ = 0.0f;
     bool standing_ = true;

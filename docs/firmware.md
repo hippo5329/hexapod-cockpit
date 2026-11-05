@@ -150,6 +150,13 @@ turns reach 65-68 % of the command instead of 38-41 %, straight lines 67 % inste
 tile; `/odom/gait` integrates the command, so it reads long by that much). A slower cycle takes fewer, longer
 steps per metre, so fewer touchdowns skid; more overlap helps a little; a higher lift did not.
 
+**Cadence.** `period_s` is the fastest cycle, the one top speed needs. Asked for less, the gait slows its cycle,
+up to `max_period_s` (3.0 s), so that the stride stays at 95 % of the longest: a step costs the servos about the
+same whatever ground it covers, so fewer, longer steps save power (at 0.02 m/s about half the steps of a fixed
+1.5 s cycle). The cycle follows the command over about one cycle; faster than the cycle allows is clamped
+meanwhile. A command that moves no foot faster than 2 mm/s counts as zero, so the gait does not step on the spot.
+`info` and the `health` line show the cycle in use.
+
 `/gait_params` (`std_msgs/Float32MultiArray`: period s, duty, lift m, longest stride m) changes them at run time.
 They are taken when the gait next stands and only within bounds (period 0.5-3 s, duty 0.5-0.8, lift 10-40 mm,
 stride 10-60 mm); `info` shows the ones in use.
@@ -183,7 +190,8 @@ shows the floor. The power switch still cuts everything.
     ros2 topic pub --once /shutdown std_msgs/msg/String "{data: shutdown}"
 
 **Sonar lights.** In real mode the ultrasonic is read at 10 Hz with or without an agent, and its two lights show
-what it sees: blue clear, yellow under 0.40 m, red under 0.20 m (20 mm of hysteresis), each change logged. It is
+what it sees: blue clear, yellow under 0.40 m, red under 0.20 m (20 mm of hysteresis), each change logged;
+dim green while the robot lies down (idle mode), and off at the final shutdown (the module stays powered). It is
 feedback only: stopping for an obstacle is the host's (nav2_collision_monitor or a test's guard). The sonar's cone
 is narrow (15°): a thin table leg beside its axis is not seen.
 

@@ -515,24 +515,32 @@ void publish_battery() {
     rcl_publish(&battery_pub, &battery_msg, nullptr);
 }
 
-// The real ultrasonic at 10 Hz, with or without an agent: the reading for /sonar and the
-// obstacle feedback on its own lights: blue clear, yellow under kNearM, red under kCloseM (20 mm
-// of hysteresis, written only on a change), each change in the log.
+// The real ultrasonic at 10 Hz, with or without an agent: the reading for /sonar, and its two
+// lights: blue clear, yellow under kNearM, red under kCloseM (20 mm of hysteresis), dim green
+// while the robot lies down (idle mode), off at the final shutdown. Written only on a change;
+// each obstacle change is logged.
 constexpr float kNearM = 0.40f, kCloseM = 0.20f;
-int sonar_level = -1;  // 0 clear, 1 near, 2 close; -1 not set yet
+enum Light { kClear, kNear, kClose, kIdle, kOff };
+int sonar_level = -1;  // kClear, kNear, kClose by range; -1 none yet
+int light_shown = -1;
+void sonar_light(int light) {
+    if (light == light_shown) return;
+    static const uint8_t rgb[5][3] = {{0, 0, 255}, {255, 160, 0}, {255, 0, 0}, {0, 24, 0}, {0, 0, 0}};
+    if (board_io::sonar_rgb(rgb[light][0], rgb[light][1], rgb[light][2])) light_shown = light;  // else next read
+}
 void read_sonar() {
     const int mm = board_io::sonar_mm();
-    if (mm < 0) return;  // a bus error keeps the last reading
-    sonar_msg.range = sonar_clamped(mm / 1000.0f);
-    const float r = sonar_msg.range, h = sonar_level < 0 ? 0.0f : 0.02f;
-    int level = r < kCloseM + (sonar_level == 2 ? h : 0) ? 2 : r < kNearM + (sonar_level >= 1 ? h : 0) ? 1 : 0;
-    if (level == sonar_level) return;
-    static const uint8_t rgb[3][3] = {{0, 0, 255}, {255, 160, 0}, {255, 0, 0}};
-    if (!board_io::sonar_rgb(rgb[level][0], rgb[level][1], rgb[level][2])) return;  // try again next read
-    if (sonar_level >= 0)
-        hexa_log::log(level == 2 ? hexa_log::kWarning : hexa_log::kInfo, "sonar: %s at %.2f m",
-                      level == 2 ? "obstacle close" : level == 1 ? "obstacle near" : "clear", r);
-    sonar_level = level;
+    if (mm >= 0) {  // a bus error keeps the last reading
+        sonar_msg.range = sonar_clamped(mm / 1000.0f);
+        const float r = sonar_msg.range, h = sonar_level < 0 ? 0.0f : 0.02f;
+        const int level =
+            r < kCloseM + (sonar_level == kClose ? h : 0) ? kClose : r < kNearM + (sonar_level >= kNear ? h : 0) ? kNear : kClear;
+        if (level != sonar_level && sonar_level >= 0)
+            hexa_log::log(level == kClose ? hexa_log::kWarning : hexa_log::kInfo, "sonar: %s at %.2f m",
+                          level == kClose ? "obstacle close" : level == kNear ? "obstacle near" : "clear", r);
+        sonar_level = level;
+    }
+    if (sonar_level >= 0) sonar_light(robot.resting() ? kIdle : sonar_level);
 }
 
 void publish_sonar() {
@@ -599,6 +607,7 @@ void console_info();
 // The ESP32's lowest state that BOOT can end: deep sleep, the RTC domain kept for the
 // BOOT pin's wake (GPIO0, pressed = low). Wi-Fi and the CPUs are off; a wake is a boot.
 void deep_sleep() {
+    if (real_sonar) sonar_light(kOff);  // the module stays powered through the sleep
     hexa_log::log(hexa_log::kNotice, "shutdown: deep sleep now; press BOOT or EN to wake");
     Serial.flush();
     delay(100);  // the datagram out before the radio stops
@@ -635,11 +644,11 @@ void base_loop() {
         last_report = t_start;
         hexa_log::log(hexa_log::kInfo,
                       "health: battery %d mV  rssi %d dBm  sessions %u  loop max %u ms  late ticks %u  gait %s  "
-                      "sonar %.2f m  unreachable %u",
+                      "cycle %.2f s  sonar %.2f m  unreachable %u",
                       battery_mv, static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(sessions),
                       static_cast<unsigned>(loop_max_ms), static_cast<unsigned>(late_ticks),
                       robot.resting() ? "lying" : robot.rest_level() > 0 ? "between" : robot.gait().standing() ? "standing" : "walking",
-                      sonar_msg.range, static_cast<unsigned>(unreachable));
+                      robot.gait().period(), sonar_msg.range, static_cast<unsigned>(unreachable));
         loop_max_ms = late_ticks = 0;
     }
     agent_step();
@@ -713,8 +722,9 @@ void console_info() {
                   imu_mount.roll() * RAD_TO_DEG, imu_mount.pitch() * RAD_TO_DEG);
     Serial.printf("sonar %s\n", sim_mode ? "simulated" : real_sonar ? "I2C 0x77 (real)" : "none (did not answer)");
     const GaitParams& gp = robot.gait_params();
-    Serial.printf("gait period %.2f s  duty %.2f  lift %.3f m  max stride %.3f m%s\n", gp.period_s, gp.duty, gp.lift,
-                  gp.max_stride, gait_pending ? "  (new ones pending: applied when it stands)" : "");
+    Serial.printf("gait period %.2f-%.2f s (in use %.2f)  duty %.2f  lift %.3f m  max stride %.3f m%s\n", gp.period_s,
+                  gp.max_period_s, robot.gait().period(), gp.duty, gp.lift, gp.max_stride,
+                  gait_pending ? "  (new ones pending: applied when it stands)" : "");
     Serial.printf("idle rest after %u s (0: never)  now %s\n", static_cast<unsigned>(idle_s),
                   robot.resting() ? "lying down" : robot.rest_level() > 0 ? "between" : "up");
     Serial.printf("shutdown when the battery stays under %d mV for 30 s (0: never)  battery %d mV\n",

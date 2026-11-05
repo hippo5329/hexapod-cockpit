@@ -139,6 +139,48 @@ static void test_stop_settles_for_every_duty_and_period() {
     }
 }
 
+// Lift-offs of leg 0 while walking `cmd` for `seconds` from a stand.
+static int steps_walking(const BodyTwist& cmd, float seconds) {
+    gait.init(&minihexa_geometry(), params);
+    float t = 0;
+    int lifts = 0;
+    bool was_down = true;
+    for (float s = 0; s < seconds; s += kDt, t += kDt) {
+        gait.command(cmd, t);
+        gait.step(kDt, t);
+        const bool down = gait.foot(0).z <= minihexa_geometry().stand_z + 1e-6f;
+        if (was_down && !down) ++lifts;
+        was_down = down;
+    }
+    return lifts;
+}
+
+// Adaptive cadence: a slow walk slows the cycle (up to max_period_s) to keep its strides long, so
+// it takes fewer steps for the same distance; at top speed the cycle is period_s, as before.
+static void test_slow_walk_takes_fewer_longer_steps() {
+    // 0.02 m/s: 0.057 m / (0.7 x 0.02) = 4.1 s wanted, 3.0 s the limit: 20 s is ~7 steps, not ~13.
+    const int slow = steps_walking({0.02f, 0, 0}, 20);
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, params.max_period_s, gait.period());
+    TEST_ASSERT_TRUE(slow >= 6 && slow <= 8);
+    // 0.04 m/s: 2.04 s; the stride stays at 95 % of the longest.
+    steps_walking({0.04f, 0, 0}, 10);
+    TEST_ASSERT_FLOAT_WITHIN(0.05f, 0.95f * params.max_stride / (params.duty * 0.04f), gait.period());
+    // Top speed and beyond: the fastest cycle, the command clamped as before.
+    steps_walking({0.2f, 0, 0}, 6);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, params.period_s, gait.period());
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, params.max_stride / (params.duty * params.period_s), gait.target().vx);
+}
+
+// A command that moves no foot 2 mm/s does not start the gait: no stepping on the spot.
+static void test_tiny_command_does_not_step() {
+    float t = 0;
+    for (int i = 0; i < 200; ++i, t += kDt) {
+        gait.command({0.001f, 0.0005f, 0.003f}, t);
+        gait.step(kDt, t);
+        TEST_ASSERT_TRUE(gait.standing());
+    }
+}
+
 // A lost command stream (no zero ever sent) also ends in a stand.
 static void test_command_timeout_stands() {
     float t = 0;
@@ -185,6 +227,8 @@ int main() {
     RUN_TEST(test_stride_clamped);
     RUN_TEST(test_stop_settles_to_neutral);
     RUN_TEST(test_stop_settles_for_every_duty_and_period);
+    RUN_TEST(test_slow_walk_takes_fewer_longer_steps);
+    RUN_TEST(test_tiny_command_does_not_step);
     RUN_TEST(test_command_timeout_stands);
     RUN_TEST(test_params_only_while_standing);
     return UNITY_END();
