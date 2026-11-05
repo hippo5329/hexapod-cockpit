@@ -28,7 +28,9 @@ void begin() {
     if (started) return;
     Serial1.begin(HEXA_SERVO_UART_BAUD, SERIAL_8N1, HEXA_SERVO_UART_RX, HEXA_SERVO_UART_TX);
     Wire.begin(HEXA_I2C_SDA, HEXA_I2C_SCL);
-    Wire.setClock(400000);  // an IMU sample (12 bytes) every tick: ~0.4 ms at 400 kHz
+    // 100 kHz, the vendor's: the I2C ultrasonic stopped answering at 400 kHz. An IMU burst
+    // (21 bytes with the address) every tick then takes ~2.5 ms of the 20 ms.
+    Wire.setClock(100000);
     analogSetPinAttenuation(HEXA_BAT_ADC_PIN, ADC_11db);
     started = true;
 }
