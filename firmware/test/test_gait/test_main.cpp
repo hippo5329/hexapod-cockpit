@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 
 #include "hexa_gait.h"
 #include "hexa_kin.h"
