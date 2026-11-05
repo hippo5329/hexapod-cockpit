@@ -28,6 +28,12 @@ class TripodGait {
 public:
     void init(const Geometry* g, const GaitParams& p);
 
+    // New parameters, taken only while the gait stands (a change mid-stride would jump the
+    // feet); false, and nothing changed, otherwise or when a value is outside the checks.
+    bool set_params(const GaitParams& p);
+    static bool params_valid(const GaitParams& p);
+    const GaitParams& params() const { return p_; }
+
     // New command at time `now_s`. Clamped to what the stride allows.
     void command(const BodyTwist& cmd, float now_s);
 

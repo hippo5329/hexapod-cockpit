@@ -29,6 +29,7 @@
 #include <rmw_microros/rmw_microros.h>
 #include <nav_msgs/msg/odometry.h>
 #include <sensor_msgs/msg/battery_state.h>
+#include <std_msgs/msg/float32_multi_array.h>
 #include <sensor_msgs/msg/imu.h>
 #include <sensor_msgs/msg/joint_state.h>
 #include <sensor_msgs/msg/range.h>
@@ -135,6 +136,7 @@ float sonar_clamped(float metres) {
 }
 
 void robot_tick(float now_s) {
+    if (gait_pending && robot.set_gait_params(pending_gait)) gait_pending = false;
     unreachable += robot.step(kTickS, now_s).unreachable;
     if (sim_mode) {
         imu_sample = sim_imu.step(kTickS, robot.truth_twist());
@@ -180,7 +182,13 @@ rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
 rclc_executor_t executor;
-rcl_subscription_t cmd_sub;
+rcl_subscription_t cmd_sub, gait_sub;
+// gait_params (std_msgs/Float32MultiArray): period s, duty, lift m, max stride m. Applied when
+// the gait next stands, if valid (TripodGait::params_valid); the console's `info` shows them.
+std_msgs__msg__Float32MultiArray gait_msg;
+float gait_msg_data[8];
+GaitParams pending_gait;
+bool gait_pending = false;
 rcl_publisher_t joint_pub, odom_pub, imu_pub, sonar_pub, truth_pub, battery_pub;
 #ifdef HEXA_CMD_VEL_STAMPED
 geometry_msgs__msg__TwistStamped cmd_msg;
@@ -215,7 +223,23 @@ void cmd_callback(const void* msg) {
                  millis() / 1000.0f);
 }
 
+void gait_callback(const void* msg) {
+    const auto* m = static_cast<const std_msgs__msg__Float32MultiArray*>(msg);
+    if (m->data.size != 4) return;
+    GaitParams p = robot.gait_params();
+    p.period_s = m->data.data[0];
+    p.duty = m->data.data[1];
+    p.lift = m->data.data[2];
+    p.max_stride = m->data.data[3];
+    if (!TripodGait::params_valid(p)) return;
+    pending_gait = p;
+    gait_pending = true;
+}
+
 void msgs_init() {
+    gait_msg.data.data = gait_msg_data;
+    gait_msg.data.capacity = sizeof gait_msg_data / sizeof gait_msg_data[0];
+    gait_msg.data.size = 0;
     for (int k = 0; k < kJoints; ++k) set_string(&joint_names[k], kJointNames[k]);
     joint_msg.name.data = joint_names;
     joint_msg.name.size = joint_msg.name.capacity = kJoints;
@@ -262,6 +286,9 @@ bool entities_create() {
     const rosidl_message_type_support_t* cmd_ts = ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist);
 #endif
     if (rclc_subscription_init_default(&cmd_sub, &node, cmd_ts, "cmd_vel") != RCL_RET_OK) return false;
+    if (rclc_subscription_init_default(&gait_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
+                                       "gait_params") != RCL_RET_OK)
+        return false;
     if (rclc_publisher_init_best_effort(&joint_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState),
                                         "joint_states") != RCL_RET_OK)
         return false;
@@ -287,8 +314,10 @@ bool entities_create() {
             return false;
     }
     executor = rclc_executor_get_zero_initialized_executor();
-    if (rclc_executor_init(&executor, &support.context, 1, &allocator) != RCL_RET_OK) return false;
+    if (rclc_executor_init(&executor, &support.context, 2, &allocator) != RCL_RET_OK) return false;
     if (rclc_executor_add_subscription(&executor, &cmd_sub, &cmd_msg, &cmd_callback, ON_NEW_DATA) != RCL_RET_OK)
+        return false;
+    if (rclc_executor_add_subscription(&executor, &gait_sub, &gait_msg, &gait_callback, ON_NEW_DATA) != RCL_RET_OK)
         return false;
     rmw_uros_sync_session(1000);
     return true;
@@ -304,6 +333,7 @@ void entities_destroy() {
     rcl_publisher_fini(&odom_pub, &node);
     rcl_publisher_fini(&joint_pub, &node);
     rcl_subscription_fini(&cmd_sub, &node);
+    rcl_subscription_fini(&gait_sub, &node);
     rclc_executor_fini(&executor);
     rcl_node_fini(&node);
     rclc_support_fini(&support);
@@ -510,6 +540,9 @@ void console_info() {
                   HEXA_BOARD_VERIFIED ? "verified" : "NOT identified (real mode refused)");
     Serial.printf("imu %s\n", sim_mode ? "simulated" : real_imu ? "QMI8658 (real)" : "none (the QMI8658 did not answer)");
     Serial.printf("sonar %s\n", sim_mode ? "simulated" : real_sonar ? "I2C 0x77 (real)" : "none (did not answer)");
+    const GaitParams& gp = robot.gait_params();
+    Serial.printf("gait period %.2f s  duty %.2f  lift %.3f m  max stride %.3f m%s\n", gp.period_s, gp.duty, gp.lift,
+                  gp.max_stride, gait_pending ? "  (new ones pending: applied when it stands)" : "");
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
     hexa_link::print_status(Serial);
 }

@@ -59,6 +59,12 @@ public:
     void set_trims(const int16_t* by_servo_id);
 
     void command(const BodyTwist& cmd, float now_s) { gait_.command(cmd, now_s); }
+    // The gait's parameters, taken only while it stands (TripodGait::set_params).
+    bool set_gait_params(const GaitParams& p) {
+        if (!gait_.set_params(p)) return false;
+        gp_ = p;
+        return true;
+    }
     StepCounts step(float dt, float now_s);
 
     float joint_angle(int k) const { return servo_[k].angle(); }  // the simulated servo's

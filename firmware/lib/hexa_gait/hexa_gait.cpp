@@ -57,6 +57,19 @@ void TripodGait::command(const BodyTwist& cmd, float now_s) {
 
 float TripodGait::leg_phase(int leg) const { return frac(phase_ + kOffset[leg]); }
 
+bool TripodGait::params_valid(const GaitParams& p) {
+    // Duty above 0.5 overlaps the tripods' stances (both down at each change); at or below
+    // 0.5 there is an instant with three feet or fewer. The rest bound what the legs reach.
+    return p.period_s >= 0.5f && p.period_s <= 3.0f && p.duty >= 0.5f && p.duty <= 0.8f && p.lift >= 0.01f &&
+           p.lift <= 0.04f && p.max_stride >= 0.01f && p.max_stride <= 0.06f && p.cmd_timeout_s > 0.0f;
+}
+
+bool TripodGait::set_params(const GaitParams& p) {
+    if (!standing_ || !params_valid(p)) return false;
+    p_ = p;
+    return true;
+}
+
 bool TripodGait::in_stance(int leg) const { return leg_phase(leg) < p_.duty; }
 
 bool TripodGait::settled() const {

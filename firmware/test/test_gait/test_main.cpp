@@ -116,6 +116,30 @@ static void test_command_timeout_stands() {
     TEST_ASSERT_EQUAL_FLOAT(0, gait.target().vx);
 }
 
+// New parameters only while standing, only valid ones; walking keeps the old ones.
+static void test_params_only_while_standing() {
+    TripodGait g;
+    g.init(&minihexa_geometry(), GaitParams());
+    GaitParams p;
+    p.period_s = 1.5f;
+    p.duty = 0.6f;
+    TEST_ASSERT_TRUE(g.set_params(p));
+    TEST_ASSERT_EQUAL_FLOAT(1.5f, g.params().period_s);
+    GaitParams bad = p;
+    bad.duty = 0.4f;
+    TEST_ASSERT_FALSE(g.set_params(bad));
+    bad = p;
+    bad.lift = 0.08f;
+    TEST_ASSERT_FALSE(g.set_params(bad));
+    g.command({0.03f, 0, 0}, 0.0f);
+    for (int i = 0; i < 10; ++i) g.step(0.02f, 0.02f * i);
+    TEST_ASSERT_FALSE(g.standing());
+    GaitParams q = p;
+    q.period_s = 2.0f;
+    TEST_ASSERT_FALSE(g.set_params(q));
+    TEST_ASSERT_EQUAL_FLOAT(1.5f, g.params().period_s);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_starts_standing);
@@ -123,5 +147,6 @@ int main() {
     RUN_TEST(test_stride_clamped);
     RUN_TEST(test_stop_settles_to_neutral);
     RUN_TEST(test_command_timeout_stands);
+    RUN_TEST(test_params_only_while_standing);
     return UNITY_END();
 }
