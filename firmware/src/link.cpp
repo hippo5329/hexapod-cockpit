@@ -5,6 +5,7 @@
 #include <WiFiUdp.h>
 #include <esp_app_desc.h>
 #include <esp_ota_ops.h>
+#include <esp_wifi.h>
 
 #include <micro_ros_platformio.h>
 #include <rmw_microros/rmw_microros.h>
@@ -19,6 +20,7 @@ WiFiUDP udp;
 IPAddress agent_ip;
 bool ota_started = false;
 uint32_t tx_ok = 0, tx_fail = 0, rx_n = 0;  // UDP datagrams, for the status line
+uint32_t tx_max_us = 0;                     // slowest send since the last status line
 void (*ota_start_cb)() = nullptr;
 void (*ota_error_cb)() = nullptr;
 
@@ -42,16 +44,15 @@ bool udp_close(uxrCustomTransport*) {
 }
 size_t udp_write(uxrCustomTransport*, const uint8_t* buf, size_t len, uint8_t*) {
     if (WiFi.status() != WL_CONNECTED) return 0;
-    if (!udp.beginPacket(agent_ip, cfg.port)) {
-        ++tx_fail;
-        return 0;
+    const uint32_t t0 = micros();
+    size_t sent = 0;
+    if (udp.beginPacket(agent_ip, cfg.port)) {
+        sent = udp.write(buf, len);
+        if (!udp.endPacket()) sent = 0;  // the driver's send queue is full: the datagram is dropped
     }
-    const size_t sent = udp.write(buf, len);
-    if (!udp.endPacket()) {
-        ++tx_fail;
-        return 0;
-    }
-    ++tx_ok;
+    tx_max_us = max(tx_max_us, micros() - t0);
+    if (sent) ++tx_ok;
+    else ++tx_fail;
     return sent;
 }
 size_t udp_read(uxrCustomTransport*, uint8_t* buf, size_t len, int timeout, uint8_t*) {
@@ -142,6 +143,9 @@ void loop() {
     static bool was_up = false;
     static uint32_t last_status = 0;
     const bool up = WiFi.status() == WL_CONNECTED;
+    // Modem sleep holds every frame to the AP for up to a beacon interval; set off again on
+    // every join (the driver may restore its default on a reconnect).
+    if (up && !was_up) esp_wifi_set_ps(WIFI_PS_NONE);
     if (up && !ota_started && !cfg.ota_pw.isEmpty()) ota_begin();
     if (ota_started) ArduinoOTA.handle();
     // Serial is free on a Wi-Fi link: a status line on every change and every 30 s.
@@ -160,11 +164,17 @@ void print_status(Print& out) {
     const bool up = WiFi.status() == WL_CONNECTED;
     out.printf("link wifi ssid %s %s", cfg.ssid.c_str(), up ? "up" : "down");
     if (up) out.printf(" ip %s rssi %d ch %d", WiFi.localIP().toString().c_str(), WiFi.RSSI(), WiFi.channel());
-    out.printf("  agent %s:%u  udp tx %u fail %u rx %u  ota %s  app %s  elf %s\n", cfg.agent.c_str(), cfg.port,
+    wifi_ps_type_t ps = WIFI_PS_NONE;
+    esp_wifi_get_ps(&ps);
+    out.printf("  ps %s", ps == WIFI_PS_NONE ? "none" : ps == WIFI_PS_MIN_MODEM ? "min" : "max");
+    out.printf("  agent %s:%u  udp tx %u fail %u rx %u max %u us  ota %s  app %s  elf %s\n", cfg.agent.c_str(), cfg.port,
                static_cast<unsigned>(tx_ok), static_cast<unsigned>(tx_fail), static_cast<unsigned>(rx_n),
-               cfg.ota_pw.isEmpty() ? "off (no password)" : (ota_started ? "on :3232" : "waiting"),
+               static_cast<unsigned>(tx_max_us), cfg.ota_pw.isEmpty() ? "off (no password)" : (ota_started ? "on :3232" : "waiting"),
                running_partition(), elf_sha());
+    tx_max_us = 0;
 }
+
+uint32_t rx_count() { return rx_n; }
 
 const char* running_partition() {
     const esp_partition_t* p = esp_ota_get_running_partition();

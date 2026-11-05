@@ -35,6 +35,8 @@ void loop();
 void on_ota(void (*start)(), void (*error)());
 
 bool network_up();  // serial: true
+// UDP datagrams received so far (any: replies, heartbeats, data): the agent is alive while it grows.
+uint32_t rx_count();
 void print_status(Print& out);
 const char* running_partition();
 const char* elf_sha();  // first 16 hex digits of the running app's ELF SHA-256
