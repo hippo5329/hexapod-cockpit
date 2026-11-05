@@ -3,14 +3,15 @@
 // Pins and buses as Hiwonder's published miniHexa sketch uses them (github.com/Hiwonder/MiniHexa;
 // taken as interface facts, no code copied), checked against the robot's own firmware image.
 // The servos are not on ESP32 pins: a servo controller on the base board makes the 18 pulses
-// and takes frames on a UART (hexa_servo.h, servo_bus_frame). HEXA_BOARD_VERIFIED stays 0, and
-// real mode refused, until every joint's direction and zero are confirmed on the robot: the
-// bench console moves one servo at a time (board_io), the gait never drives them yet.
+// and takes frames on a UART (hexa_servo.h, servo_bus_frame). Verified on miniHexa #1
+// (2026-11-05): every servo moves alone on its id, and every leg's foot goes where the
+// console's `foot` command (gait IK + servo calibration + trims) puts it, on two cameras.
+// Real mode (NVS sim=0) drives the servos from the gait.
 #pragma once
 
 #include <stdint.h>
 
-#define HEXA_BOARD_VERIFIED 0
+#define HEXA_BOARD_VERIFIED 1
 
 // Servo controller: Serial1, 8N1.
 #define HEXA_SERVO_UART_BAUD 230400
