@@ -108,13 +108,14 @@ void TripodGait::step(float dt, float now_s) {
     // Adaptive cadence: the cycle that keeps the stride at 95 % of max_stride for this command,
     // within period_s .. max_period_s, reached over about a cycle (a sudden change of cycle would
     // jump the swing feet's landing points). Faster than the cycle allows is clamped meanwhile.
-    const float v = worst_foot_speed(raw_);
+    // The cycle is sized for what the feet will do: the command plus the yaw trim.
+    BodyTwist eff = raw_;
+    if (worst_foot_speed(raw_) > 0) eff.wz += trim_wz_;  // the trim only while there is a command to walk
+    const float v = worst_foot_speed(eff);
     if (v > 0) {
         const float want = std::fmin(p_.max_period_s, std::fmax(p_.period_s, 0.95f * p_.max_stride / (p_.duty * v)));
         period_ += (want - period_) * std::fmin(1.0f, dt / period_);
     }
-    BodyTwist eff = raw_;
-    if (v > 0) eff.wz += trim_wz_;  // the trim only while there is a command to walk
     cmd_ = clamp(eff);
     odom_ = {cmd_.vx, cmd_.vy, clamp(raw_).wz};
     const bool moving = std::fabs(cmd_.vx) > kZeroCmd || std::fabs(cmd_.vy) > kZeroCmd ||
