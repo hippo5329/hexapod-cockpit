@@ -4,7 +4,7 @@ project(hexapod_bringup)
 find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS scripts/gait_odom_tf.py DESTINATION lib/${PROJECT_NAME} RENAME gait_odom_tf)
-install(DIRECTORY launch rviz DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config launch rviz DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)

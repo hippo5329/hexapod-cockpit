@@ -69,7 +69,14 @@ once the reference's fast inverse square root is replaced by an exact one (with 
   reads its own tilt (the simulated one, roll 1.0° and pitch −1.5°, shows up as such). Declared variance
   (0.2°)², from the filter's error in simulation.
 - **Yaw** is the gyro's integral from 0 at boot. The QMI8658A has no magnetometer, so nothing anchors it and it
-  drifts with the gyro's bias. Its declared variance is 10⁶: fuse the yaw *rate*, never this yaw as absolute.
+  drifts with what is left of the gyro's bias. Its declared variance is 10⁶: fuse the yaw *rate*, never this yaw
+  as absolute.
+- **Gyro bias** (`GyroBias`): a standing walker does not turn, and the gait knows when it stands (every foot down
+  on its neutral position, nothing commanded). After 0.5 s standing the board averages the gyro (time constant
+  1 s) into a bias estimate and takes it out of every sample, before the AHRS and before `/imu/data`; walking,
+  the estimate is held. A reading over 0.05 rad/s is motion, not bias, and is not learned. In simulation, 120 s
+  standing drift the yaw 0.0045 rad at worst instead of 0.055. A robot turned slowly by hand while it stands
+  would be learned as bias: nothing on board can tell the two apart.
 - **Robustness**: a gap over 0.5 s (a stalled loop) holds the estimate rather than integrating it as motion; a
   zero or non-finite accelerometer falls back to the gyro; a non-finite gyro is skipped.
 - **Gravity stays in** `linear_acceleration` (REP 145): a consumer that wants motion removes it.
@@ -83,10 +90,22 @@ the same code. A real QMI8658A will need dt from the sample timestamps.
 |---|---|---|
 | `/cmd_vel` | `geometry_msgs/Twist` (Jazzy), `TwistStamped` (Lyrical) | `linear.x`, `linear.y`, `angular.z`; clamped to the stride limit |
 | `/joint_states` | `sensor_msgs/JointState` | 18 joints `rf_coxa` … `lf_tibia`; sim: simulated angle; real: commanded |
-| `/odom/gait` | `nav_msgs/Odometry` | integrated commanded body twist (dead reckoning, no slip); `odom` → `base_footprint` (as a TF by `hexapod_bringup`'s `gait_odom_tf`) |
-| `/imu/data` | `sensor_msgs/Imu` | sim mode: the simulated QMI8658A, 50 Hz ([simulation.md](simulation.md)), with the AHRS's orientation (below) |
+| `/odom/gait` | `nav_msgs/Odometry` | integrated commanded body twist (dead reckoning, no slip), `odom` → `base_footprint`; covariances below |
+| `/imu/data` | `sensor_msgs/Imu` | sim mode: the simulated QMI8658A, 50 Hz ([simulation.md](simulation.md)), gyro bias taken out, with the AHRS's orientation (above) |
 | `/sonar` | `sensor_msgs/Range` | sim mode: the simulated ultrasonic, 10 Hz |
 | `/sim/ground_truth` | `nav_msgs/Odometry` | sim mode: the true pose, 5 Hz |
+
+`/odom/gait` declares (`gait_odom_variance`, one table for the firmware and the ROS 2 node):
+
+| | x, y | yaw | z, roll, pitch |
+|---|---|---|---|
+| pose | 0.01 | 0.05 | 10⁶ |
+| twist, walking | 0.004 | 0.02 | 10⁶ |
+| twist, standing | 1e-8 | 1e-8 | 10⁶ |
+
+Walking, the feet slip and servos lag, so the twist is loose and an EKF's heading follows the gyro (2e-6). Standing,
+the body is still and the gait's zero is exact, declared tighter than the gyro: the EKF holds the heading on it
+(a zero-velocity update). Its pose is the integral of the same twist; the EKF does not fuse it.
 
 Every published topic is best effort. Real IMU, ultrasonic and battery come once their buses and pins are read
 off the board.

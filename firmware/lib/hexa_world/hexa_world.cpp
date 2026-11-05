@@ -11,6 +11,12 @@ void Pose2::apply_body(double dx, double dy, double dyaw) {
     yaw = std::remainder(yaw + dyaw, 2 * M_PI);
 }
 
+OdomVariance gait_odom_variance(bool standing) {
+    OdomVariance v = {{0.01, 0.01, 1e6, 1e6, 1e6, 0.05}, {0.004, 0.004, 1e6, 1e6, 1e6, 0.02}};
+    if (standing) v.twist[0] = v.twist[1] = v.twist[5] = 1e-8;  // gyro white noise: 2e-6 (rad/s)^2
+    return v;
+}
+
 bool rigid_2d(const Vec3* before, const Vec3* now, const bool* use, double* dx, double* dy, double* dyaw) {
     int n = 0;
     double ax = 0, ay = 0, bx = 0, by = 0;

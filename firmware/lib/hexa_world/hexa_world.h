@@ -29,6 +29,19 @@ struct Pose2 {
 // from the legs with use[i]. False with fewer than two.
 bool rigid_2d(const Vec3* before, const Vec3* now, const bool* use, double* dx, double* dy, double* dyaw);
 
+// The variances gait odometry declares (nav_msgs/Odometry diagonals: x, y, z, roll, pitch,
+// yaw), one table for the firmware and the ROS 2 node. Dead reckoning from commanded steps:
+// the pose is loose and its yaw the loosest (no magnetometer). The twist is loose while the
+// gait walks (slip, servo lag). While it stands the body is still and the gait's zero is
+// exact, so the twist is declared tighter than any gyro: an EKF fusing both then holds the
+// heading on it instead of integrating the gyro's bias (a zero-velocity update). A robot
+// pushed while it stands breaks that promise; nothing on board can see it.
+struct OdomVariance {
+    double pose[6];
+    double twist[6];
+};
+OdomVariance gait_odom_variance(bool standing);
+
 struct StepCounts {
     int unreachable = 0;  // legs whose foot target IK could not reach (they keep their angles)
     int clamped = 0;      // joint pulses clamped to the servo range

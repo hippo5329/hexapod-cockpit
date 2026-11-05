@@ -5,8 +5,8 @@
 from commanded steps. This node republishes each message's pose as a transform, with the message's
 own stamp and frames, so RViz (fixed frame odom) shows the robot walking across the floor.
 
-It is the only parent base_footprint may have: once an EKF fuses /odom/gait with the IMU and
-publishes odom -> base_footprint itself, this node must not run.
+It is the only parent base_footprint may have: view_robot.launch.py runs it only with odom_tf:=gait;
+the default (odom_tf:=ekf) runs robot_localization's EKF in its place.
 
 Parameters:
   child_frame  overrides the message's child_frame_id (default: empty = use the message's).

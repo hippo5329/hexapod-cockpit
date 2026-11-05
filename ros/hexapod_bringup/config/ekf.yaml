@@ -1,0 +1,39 @@
+# robot_localization's EKF for the miniHexa: odom -> base_footprint from the gait's twist and the
+# gyro's yaw rate. Launched by view_robot.launch.py (odom_tf:=ekf, the default); it is then the
+# only parent base_footprint has, and gait_odom_tf must not run.
+#
+# What is fused, and why:
+#   /odom/gait  vx, vy, yaw rate. The gait walks any direction, so vy is a measurement, not a
+#               constraint. Its pose is not fused: it is the integral of the same twist.
+#               While the gait stands it declares its twist exact (1e-8).
+#   /imu/data   yaw rate only. The QMI8658A has no magnetometer, so the AHRS's yaw is the
+#               gyro's integral from boot (declared 1e6) and no absolute yaw exists; roll and
+#               pitch do not enter a 2-D filter. Linear acceleration is not fused: with
+#               gravity in it and the board's tilt, the EKF would integrate it into a drift.
+# While walking the gyro (2e-6 (rad/s)^2) outweighs the gait's yaw rate (0.02), so the heading
+# follows the gyro and not the slipping feet; position is the gait's alone.
+# Standing, the heading holds because the board takes the gyro's bias out (learned while the
+# gait stands, firmware.md). The exact zero alone does not hold it: between two 25 Hz gait
+# messages the process noise lets each 50 Hz gyro sample pull the yaw rate back, and the
+# heading drifted at ~60 % of the raw bias before the board removed it.
+ekf_filter_node:
+  ros__parameters:
+    frequency: 50.0
+    two_d_mode: true
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+    odom0: odom/gait
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+    imu0: imu/data
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]

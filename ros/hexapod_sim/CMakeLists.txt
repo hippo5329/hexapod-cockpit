@@ -40,6 +40,9 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_sim_node test/test_sim_node.py
     ENV HEXA_SIM_NODE=$<TARGET_FILE:hexapod_sim_node>
     TIMEOUT 120)
+  ament_add_pytest_test(test_ekf test/test_ekf.py
+    ENV HEXA_SIM_NODE=$<TARGET_FILE:hexapod_sim_node>
+    TIMEOUT 120)
 endif()
 
 ament_package()

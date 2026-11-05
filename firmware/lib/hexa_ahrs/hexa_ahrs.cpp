@@ -89,6 +89,36 @@ void Ahrs::update(float gx, float gy, float gz, float ax, float ay, float az, fl
     normalize(q_);
 }
 
+void GyroBias::init(const GyroBiasParams& p) {
+    p_ = p;
+    b_[0] = b_[1] = b_[2] = 0;
+    still_s_ = 0;
+    n_ = 0;
+}
+
+void GyroBias::update(float gx, float gy, float gz, bool still, float dt) {
+    if (!still || !(dt > 0)) {
+        still_s_ = 0;
+        return;
+    }
+    still_s_ += dt;
+    if (still_s_ < p_.settle_s) return;
+    const float g[3] = {gx, gy, gz};
+    for (float v : g)
+        if (!(std::fabs(v) <= p_.max_rate)) return;  // motion (or NaN), not bias
+    // A running mean until it spans tau, then a first-order low-pass with that time
+    // constant: the first estimate is good after a few samples, later ones track drift.
+    ++n_;
+    const float k = std::fmax(1.0f / n_, dt / p_.tau_s);
+    for (int i = 0; i < 3; ++i) b_[i] += k * (g[i] - b_[i]);
+}
+
+void GyroBias::correct(float* gx, float* gy, float* gz) const {
+    *gx -= b_[0];
+    *gy -= b_[1];
+    *gz -= b_[2];
+}
+
 float Ahrs::roll() const {
     return std::atan2(2 * (q_.w * q_.x + q_.y * q_.z), 1 - 2 * (q_.x * q_.x + q_.y * q_.y));
 }

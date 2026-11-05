@@ -5,6 +5,7 @@
 #include <unity.h>
 
 #include <cmath>
+#include <initializer_list>
 #include <cstdio>
 
 #include "hexa_ahrs.h"
@@ -157,6 +158,75 @@ static void test_stalls_and_bad_samples_are_not_motion() {
     TEST_ASSERT_DOUBLE_WITHIN(0.01, 0.5, a.yaw());
 }
 
+// The bias estimator on a known bias: nothing learned in the settle time, the bias within
+// noise after a few seconds of standing, held while walking, and a hand turning the
+// "standing" robot (a rate beyond any bias) not learned.
+static void test_gyro_bias_is_learned_standing_and_held_walking() {
+    GyroBias gb;
+    gb.init();
+    Rng rng(7);
+    const float b[3] = {0.003f, -0.002f, 0.0035f}, noise = 0.0024495f;
+    float t = 0;
+    for (; t < 0.4f; t += kDt) gb.update(b[0] + rng.uniform(noise), b[1] + rng.uniform(noise), b[2] + rng.uniform(noise), true, kDt);
+    TEST_ASSERT_FALSE_MESSAGE(gb.learned(), "learned during the settle time");
+    for (; t < 5.0f; t += kDt) gb.update(b[0] + rng.uniform(noise), b[1] + rng.uniform(noise), b[2] + rng.uniform(noise), true, kDt);
+    printf("bias after 5 s standing: %+.5f %+.5f %+.5f (true %+.4f %+.4f %+.4f)\n", gb.bias()[0], gb.bias()[1],
+           gb.bias()[2], b[0], b[1], b[2]);
+    for (int i = 0; i < 3; ++i) TEST_ASSERT_FLOAT_WITHIN(3e-4f, b[i], gb.bias()[i]);
+    const float held = gb.bias()[2];
+    for (int i = 0; i < 200; ++i) gb.update(0.0f, 0.0f, 0.4f + b[2], false, kDt);  // walking, turning
+    TEST_ASSERT_EQUAL_FLOAT(held, gb.bias()[2]);
+    for (int i = 0; i < 200; ++i) gb.update(0.0f, 0.0f, 0.3f, true, kDt);  // turned by hand while it stands
+    TEST_ASSERT_EQUAL_FLOAT(held, gb.bias()[2]);
+    float gx = 0.1f, gy = 0.2f, gz = 0.3f;
+    gb.correct(&gx, &gy, &gz);
+    TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.3f - held, gz);
+}
+
+// The model's IMU (bias a random walk) with the estimator in front of the AHRS: standing,
+// the AHRS's yaw drifts by what is left of the bias, not by the bias.
+static void test_standing_yaw_holds_with_the_bias_taken_out() {
+    SimRobot r;
+    TEST_ASSERT_TRUE(r.init(0.05));
+    SimImu imu;
+    imu.init();
+    GyroBias gb;
+    gb.init();
+    Ahrs raw, fixed;
+    raw.init();
+    fixed.init();
+    double worst_raw = 0, worst_fixed = 0;
+    float t = 0;
+    for (; t < 120.0f; t += kDt) {
+        r.command({0, 0, 0}, t);
+        r.step(kDt, t);
+        ImuSample s = imu.step(kDt, r.truth_twist());
+        raw.update(s.gx, s.gy, s.gz, s.ax, s.ay, s.az, kDt);
+        gb.update(s.gx, s.gy, s.gz, r.gait().standing(), kDt);
+        gb.correct(&s.gx, &s.gy, &s.gz);
+        fixed.update(s.gx, s.gy, s.gz, s.ax, s.ay, s.az, kDt);
+        worst_raw = std::fmax(worst_raw, std::fabs(raw.yaw()));
+        worst_fixed = std::fmax(worst_fixed, std::fabs(fixed.yaw()));
+    }
+    printf("standing 120 s: yaw drift worst %.4f rad raw, %.4f rad with the bias taken out (now %+.4f / %+.4f)\n",
+           worst_raw, worst_fixed, raw.yaw(), fixed.yaw());
+    TEST_ASSERT_TRUE_MESSAGE(gb.learned(), "nothing learned in 120 s standing");
+    // Measured 0.055 raw, 0.0045 with the bias out (seed 5329).
+    TEST_ASSERT_TRUE_MESSAGE(worst_fixed < 0.015, "standing yaw drifts with the bias taken out");
+    TEST_ASSERT_TRUE_MESSAGE(worst_fixed < worst_raw / 4, "taking the bias out barely helps");
+}
+
+// Gait odometry's declared twist: loose while walking, tighter than the gyro while standing.
+static void test_gait_odom_variance_is_tight_only_standing() {
+    const OdomVariance walk = gait_odom_variance(false), stand = gait_odom_variance(true);
+    const float gyro_var = uniform_var(ImuParams().gyro_noise);
+    TEST_ASSERT_TRUE(walk.twist[5] > 100 * gyro_var);   // walking: the gyro leads the heading
+    TEST_ASSERT_TRUE(stand.twist[5] < gyro_var / 100);  // standing: the gait's zero does
+    TEST_ASSERT_TRUE(stand.twist[0] < 1e-6 && stand.twist[1] < 1e-6);
+    for (int i : {2, 3, 4}) TEST_ASSERT_TRUE(walk.twist[i] >= 1e6 && stand.twist[i] >= 1e6);  // not measured
+    for (int i = 0; i < 6; ++i) TEST_ASSERT_EQUAL_DOUBLE(walk.pose[i], stand.pose[i]);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_first_sample_seeds_the_tilt);
@@ -165,5 +235,8 @@ int main() {
     RUN_TEST(test_walking_jolts_do_not_tip_it);
     RUN_TEST(test_a_tilt_step_settles_at_the_gains_pace);
     RUN_TEST(test_stalls_and_bad_samples_are_not_motion);
+    RUN_TEST(test_gyro_bias_is_learned_standing_and_held_walking);
+    RUN_TEST(test_standing_yaw_holds_with_the_bias_taken_out);
+    RUN_TEST(test_gait_odom_variance_is_tight_only_standing);
     return UNITY_END();
 }

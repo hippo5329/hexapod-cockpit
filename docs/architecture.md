@@ -31,8 +31,10 @@ The miniHexa has no robot computer on board, so the first setup runs the agent a
 
 ## Odometry
 
-No encoders: `/odom/gait` is dead reckoning from commanded steps and will slip. The EKF fuses it with the IMU's
-gyro for yaw. The QMI8658A has no magnetometer, so yaw has no absolute anchor; long runs need SLAM's scan
+No encoders: `/odom/gait` is dead reckoning from commanded steps and will slip. The EKF (robot_localization,
+`hexapod_bringup`) fuses its twist with the gyro's yaw rate, so the heading follows the gyro and not the slipping
+feet; position stays the gait's. Standing, the board takes the gyro's bias out and the gait declares its zero
+exact, so the heading holds. The QMI8658A has no magnetometer, so yaw has no absolute anchor; long runs need SLAM's scan
 matching, and the Standard Kit has no LiDAR. Nav2 is therefore phase 3 and needs a range sensor added.
 
 ## Phases

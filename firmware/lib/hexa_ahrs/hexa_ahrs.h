@@ -39,6 +39,36 @@ struct AhrsParams {
     float yaw_var = 1e6f;
 };
 
+// The gyro's zero-rate offset, learned while the robot is still. A standing walker does not
+// turn (the gait knows when it stands: every foot down on its neutral position, nothing
+// commanded), so what the gyro reads then is its bias plus noise. The firmware subtracts
+// the estimate before the AHRS and /imu/data see the rates; while walking it is held. A
+// robot picked up or turned by hand while it "stands" reads more than any bias: those
+// samples are not learned. Nothing here can tell a slow hand from a bias.
+struct GyroBiasParams {
+    float settle_s = 0.5f;   // standing this long first (the last step's servo lag)
+    float tau_s = 1.0f;      // averaging time constant while still
+    float max_rate = 0.05f;  // rad/s per axis: a reading beyond this is motion, not bias
+};
+
+class GyroBias {
+public:
+    void init(const GyroBiasParams& p = GyroBiasParams());
+    // One gyro sample (rad/s), whether the robot is still, dt since the previous sample.
+    void update(float gx, float gy, float gz, bool still, float dt);
+    // The sample minus the estimate.
+    void correct(float* gx, float* gy, float* gz) const;
+    const float* bias() const { return b_; }
+    bool learned() const { return n_ > 0; }
+    const GyroBiasParams& params() const { return p_; }
+
+private:
+    GyroBiasParams p_;
+    float b_[3] = {0, 0, 0};
+    float still_s_ = 0;
+    long n_ = 0;
+};
+
 class Ahrs {
 public:
     void init(const AhrsParams& p = AhrsParams());

@@ -81,9 +81,11 @@ the bias. Turning
 0.4 rad/s for 6 s, the integrated gyro is within 2 % of the true turn. Gait odometry claims 6 % more than the
 truth: the slip the IMU can see and the gait cannot. Walking, the tripod hand-overs show as ~0.6 m/s² jolts.
 
-**Orientation** (the AHRS on the simulated IMU; `test_ahrs`, and the board check on the bare ESP32):
+**Orientation** (the AHRS on the simulated IMU; `test_ahrs`, and the board check on the bare ESP32). The yaw
+column is the AHRS on the raw samples; the board takes the gyro's bias out while it stands
+([firmware.md](firmware.md#ahrs)), and then 120 s standing drift 0.0045 rad at worst instead of 0.055:
 
-| | roll and pitch error, rms (worst) | yaw |
+| | roll and pitch error, rms (worst) | yaw (raw gyro) |
 |---|---|---|
 | standing 30 s | 0.145° (0.45°) | +0.012 rad: the gyro bias's integral |
 | turning 0.4 rad/s, 6 s | 0.160° (0.45°) | 2.289 rad against the true 2.260 (1 % scale error) |
@@ -91,7 +93,8 @@ truth: the slip the IMU can see and the gait cannot. Walking, the tripod hand-ov
 
 The error is measured against the sensor's true tilt, the mount's: the model's body stays level. The declared
 (0.2°)² covers it. On the board, standing, the AHRS reads roll +0.9° and pitch −1.35° to −1.4°, the mount less the
-accelerometer's bias; a 3 s turn reads within 0.005 rad of ground truth.
+accelerometer's bias; a 3 s turn reads within 0.004–0.024 rad of ground truth (the 1 % scale error is 0.011 of
+it, the rest the bias's walk since it was learned).
 
 **Ultrasonic** (`/sonar`, 10 Hz, frame `sonar_link`, `sensor_msgs/Range`): a 15° cone, raycast against the
 walls of the world: by default a closed 2 m × 2 m room centred on the start pose (`room_half_size` on the
@@ -132,13 +135,14 @@ ros2 launch hexapod_sim sim.launch.py slip:=0.10   # another floor
 All but `/cmd_vel` and `/sim/walls` are best effort, as from the firmware. The node steps the world at the
 firmware's 50 Hz frame, and the gait's 0.5 s command timeout applies. Parameters: `slip`, `room_half_size`,
 `seed` (sensor noise), `cmd_vel_stamped`.
-`sim.launch.py` includes the walking view (below), so the robot is drawn where its gait odometry says, as on the
-real robot. Two trails show the difference: orange for where it thinks it went (`/odom/gait`), green for where it
-really went (`/sim/ground_truth`). The room's walls and the sonar cone are drawn too.
+`sim.launch.py` includes the walking view (below), so the robot is drawn where the EKF says, as on the real
+robot. Three trails show the difference: orange for the gait odometry (`/odom/gait`), blue for the EKF (`/odom`),
+green for where it really went (`/sim/ground_truth`). The room's walls and the sonar cone are drawn too.
 
 It is tested against the board: the bare-ESP32 sim-mode check passes on the node with the same numbers. Its own
 `colcon test` walks it 0.2 m and checks the ground truth against the slip (at slip 0.05 and 0.5), the IMU's
-rates, covariances and standing reading, and the sonar's distance to the wall before and after the walk.
+rates, covariances and standing reading, and the sonar's distance to the wall before and after the walk. A second
+test runs the EKF on it (below).
 
 ## Firmware sim mode
 
@@ -186,19 +190,47 @@ Change a length in `hexa_kin.cpp` without changing it in `minihexa.urdf.xacro` (
 ros2 launch hexapod_bringup view_robot.launch.py
 ```
 
-- `gait_odom_tf` republishes each `/odom/gait` message as the `odom` → `base_footprint` transform, with the
-  message's own stamp, so the legs (from `/joint_states`) and the body move on one clock.
-- RViz's fixed frame is `odom`: the robot walks across the grid, with a trail of `/odom/gait` arrows behind it.
-- The pose is what the gait *commanded*: no slip, and the IMU not fused yet. Once an EKF fuses `/odom/gait` with the IMU,
-  the EKF publishes `odom` → `base_footprint` and `gait_odom_tf` must not run: a frame has one parent.
+- `odom` → `base_footprint` comes from one node (a frame has one parent), chosen by `odom_tf`:
+  - `ekf` (the default): robot_localization's EKF (`config/ekf.yaml`, below), filtered odometry on `/odom`.
+  - `gait`: `gait_odom_tf` republishes each `/odom/gait` message's pose as the transform, with its own stamp:
+    what the gait *commanded*, no slip. For a board without an IMU.
+- RViz's fixed frame is `odom`: the robot walks across the grid, with trails of `/odom/gait` (orange) and `/odom`
+  (blue) arrows behind it.
 
-A test (`colcon test`) checks that the transform carries the message's pose, frames and stamp.
+A test (`colcon test`) checks that `gait_odom_tf`'s transform carries the message's pose, frames and stamp.
+
+### EKF (`config/ekf.yaml`)
+
+robot_localization's `ekf_node` in 2-D mode, `odom` → `base_footprint`, 50 Hz. It fuses:
+- from `/odom/gait`: vx, vy and the yaw rate. The gait walks any direction, so vy is a measurement. Its pose is
+  the integral of the same twist and is not fused.
+- from `/imu/data`: the yaw rate only. There is no magnetometer, so no absolute yaw exists; roll and pitch do not
+  enter a 2-D filter; the linear acceleration (gravity in it, the board tilted) would integrate into a drift.
+
+Walking, the gyro (2e-6) outweighs the gait's yaw rate (0.02), so the heading follows the gyro, not the slipping
+feet; position is the gait's alone. Standing, the gait declares its twist exact (1e-8) and the board has taken the
+gyro's bias out, so the heading holds. On the sim node (seed 5329, deterministic; the same on Jazzy and Lyrical),
+heading error against ground truth:
+
+| | `/odom/gait` | EKF `/odom` |
+|---|---|---|
+| standing 30 s | 0 | 0.001–0.003 rad |
+| walk 0.05 m/s, 4 s | 0.0006 rad | 0.001 rad |
+| turn 0.4 rad/s, 3 s (1.13 rad) | 0.067 rad | 0.011 rad |
+| arc 0.04 m/s + 0.25 rad/s, 8 s (1.89 rad) | 0.111 rad | 0.044 rad |
+| strafe 0.04 m/s, 4 s | 0.001 rad | 0.0001 rad |
+| position after all five | 22 mm off | 6 mm off |
+
+The EKF's turn error is mostly the gyro's 1 % scale error and the bias's walk since it was learned; the gait's is
+its slip. Its distance is the gait's, slip included (4 s walk: 0.197 m, truth 0.189 m). `colcon test` and the
+board check hold these: the TF equals `/odom`, standing drift, the walk's distance, and a turn at least twice as
+close to ground truth as `/odom/gait`'s.
 
 ![miniHexa after a 0.3 m walk, gait odometry trail behind it](images/minihexa_walk_rviz.png)
 
 ## Not yet
 
-- The EKF that fuses `/imu/data` with `/odom/gait`.
+- A gyro scale calibration: the 1 % scale error is most of the EKF's turn error.
 - A level calibration: the AHRS reports the sensor's tilt, mount included; the board could store the tilt it
   reads standing on a level floor and subtract it.
 - Other worlds than the square room (obstacles, a saved map's walls).

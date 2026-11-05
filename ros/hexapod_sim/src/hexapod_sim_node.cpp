@@ -66,6 +66,7 @@ public:
         const int seed = declare_parameter("seed", 5329);
         if (!robot_.init(slip)) throw std::runtime_error("neutral stance unreachable");
         imu_.init(hexa::ImuParams(), static_cast<uint32_t>(seed));
+        gyro_bias_.init();
         ahrs_.init();
         sonar_.init(hexa::RangeParams(), static_cast<uint32_t>(seed) * 2654435761u);
         hexa::default_room(walls_, static_cast<float>(room));
@@ -74,13 +75,6 @@ public:
         joint_msg_.position.resize(hexa::kJoints);
         odom_msg_.header.frame_id = "odom";
         odom_msg_.child_frame_id = "base_footprint";
-        // Same covariances as the firmware: dead reckoning, yaw the loosest.
-        const double pose_var[6] = {0.01, 0.01, 1e6, 1e6, 1e6, 0.05};
-        const double twist_var[6] = {0.004, 0.004, 1e6, 1e6, 1e6, 0.02};
-        for (int i = 0; i < 6; ++i) {
-            odom_msg_.pose.covariance[i * 7] = pose_var[i];
-            odom_msg_.twist.covariance[i * 7] = twist_var[i];
-        }
         truth_msg_.header.frame_id = "odom";
         truth_msg_.child_frame_id = "base_footprint";
         // The simulated IMU declares the white noise it makes; the orientation is the AHRS's,
@@ -134,7 +128,10 @@ private:
         if (n.unreachable || n.clamped)
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "gait fault: %d legs unreachable, %d pulses clamped",
                                  n.unreachable, n.clamped);
-        const hexa::ImuSample m = imu_.step(kTickS, robot_.truth_twist());
+        hexa::ImuSample m = imu_.step(kTickS, robot_.truth_twist());
+        // As the firmware: the gyro's bias learned while the gait stands, taken out of every sample.
+        gyro_bias_.update(m.gx, m.gy, m.gz, robot_.gait().standing(), kTickS);
+        gyro_bias_.correct(&m.gx, &m.gy, &m.gz);
         ahrs_.update(m.gx, m.gy, m.gz, m.ax, m.ay, m.az, kTickS);
         ++frame_;
         if (frame_ % 2 == 0) publish();  // 25 Hz, as the firmware
@@ -203,6 +200,12 @@ private:
         odom_msg_.twist.twist.linear.x = tw.vx;
         odom_msg_.twist.twist.linear.y = tw.vy;
         odom_msg_.twist.twist.angular.z = tw.wz;
+        // The firmware's covariances (hexa_world): tight while the gait stands.
+        const hexa::OdomVariance var = hexa::gait_odom_variance(robot_.gait().standing());
+        for (int i = 0; i < 6; ++i) {
+            odom_msg_.pose.covariance[i * 7] = var.pose[i];
+            odom_msg_.twist.covariance[i * 7] = var.twist[i];
+        }
         odom_pub_->publish(odom_msg_);
     }
 
@@ -220,6 +223,7 @@ private:
 
     hexa::SimRobot robot_;
     hexa::SimImu imu_;
+    hexa::GyroBias gyro_bias_;
     hexa::Ahrs ahrs_;
     hexa::SimRange sonar_;
     hexa::Wall walls_[hexa::kRoomWalls];

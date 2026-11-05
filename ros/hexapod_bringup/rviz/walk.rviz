@@ -41,6 +41,27 @@ Visualization Manager:
         Head Radius: 0.005
       Covariance:
         Value: false
+    - Class: rviz_default_plugins/Odometry
+      Name: EKF odometry
+      Enabled: true
+      Topic:
+        Value: /odom
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 5
+      Keep: 100
+      Position Tolerance: 0.01
+      Angle Tolerance: 0.1
+      Shape:
+        Value: Arrow
+        Color: 60; 140; 255
+        Shaft Length: 0.03
+        Shaft Radius: 0.002
+        Head Length: 0.01
+        Head Radius: 0.005
+      Covariance:
+        Value: false
     - Class: rviz_default_plugins/Range
       Name: Sonar
       Enabled: true

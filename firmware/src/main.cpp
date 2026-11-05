@@ -56,6 +56,7 @@ SimRobot robot;
 uint32_t unreachable = 0;
 SimImu sim_imu;
 ImuSample imu_sample{};
+GyroBias gyro_bias;
 Ahrs ahrs;
 SimRange sim_sonar;
 Wall room[kRoomWalls];
@@ -63,6 +64,7 @@ Wall room[kRoomWalls];
 void robot_init() {
     robot.init();  // slip 0.05, as the host simulator
     sim_imu.init();
+    gyro_bias.init();
     ahrs.init();
     sim_sonar.init();
     default_room(room);
@@ -72,7 +74,10 @@ void robot_tick(float now_s) {
     unreachable += robot.step(kTickS, now_s).unreachable;
     if (sim_mode) {
         imu_sample = sim_imu.step(kTickS, robot.truth_twist());
-        // Every sample, connected or not: the estimate is settled when a session starts.
+        // Every sample, connected or not: the estimates are settled when a session starts.
+        // The gyro's bias is learned while the gait stands and taken out of every sample.
+        gyro_bias.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, robot.gait().standing(), kTickS);
+        gyro_bias.correct(&imu_sample.gx, &imu_sample.gy, &imu_sample.gz);
         ahrs.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, imu_sample.ax, imu_sample.ay, imu_sample.az,
                     kTickS);
     }
@@ -127,13 +132,6 @@ void msgs_init() {
     joint_msg.position.size = joint_msg.position.capacity = kJoints;
     set_string(&odom_msg.header.frame_id, "odom");
     set_string(&odom_msg.child_frame_id, "base_footprint");
-    // Dead reckoning from commanded steps: loose, and yaw the loosest (no magnetometer).
-    const double pose_var[6] = {0.01, 0.01, 1e6, 1e6, 1e6, 0.05};
-    const double twist_var[6] = {0.004, 0.004, 1e6, 1e6, 1e6, 0.02};
-    for (int i = 0; i < 6; ++i) {
-        odom_msg.pose.covariance[i * 7] = pose_var[i];
-        odom_msg.twist.covariance[i * 7] = twist_var[i];
-    }
     set_string(&truth_msg.header.frame_id, "odom");
     set_string(&truth_msg.child_frame_id, "base_footprint");
     // The simulated IMU declares the white noise it makes; the orientation is the AHRS's
@@ -226,6 +224,11 @@ void publish_state() {
     odom_msg.twist.twist.linear.x = tw.vx;
     odom_msg.twist.twist.linear.y = tw.vy;
     odom_msg.twist.twist.angular.z = tw.wz;
+    const OdomVariance var = gait_odom_variance(robot.gait().standing());
+    for (int i = 0; i < 6; ++i) {
+        odom_msg.pose.covariance[i * 7] = var.pose[i];
+        odom_msg.twist.covariance[i * 7] = var.twist[i];
+    }
     rcl_publish(&odom_pub, &odom_msg, nullptr);
 }
 
