@@ -25,6 +25,10 @@
 #define HEXA_IMU_ADDR 0x6A
 #define HEXA_SONAR_ADDR 0x77
 #define HEXA_BAT_I2C_ADDR 0x46
+// The Advanced kit's I2C modules (docs/hardware-minihexa.md): the ESP32-S3 vision module and the
+// WonderEcho voice module.
+#define HEXA_VISION_ADDR 0x52
+#define HEXA_VOICE_ADDR 0x34
 
 // Battery on V1.1 boards: ADC1 channel 5 (ADC1 works with Wi-Fi on) behind 100k/10k.
 #define HEXA_BAT_ADC_PIN 33

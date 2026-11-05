@@ -21,6 +21,8 @@ int sonar_mm();        // the I2C ultrasonic; -1 when absent
 // The ultrasonic's two RGB lights, solid (its register map: mode 2, colours 3-8); false when absent.
 bool sonar_rgb(uint8_t r, uint8_t g, uint8_t b);
 int imu_who_am_i();    // QMI8658 register 0 (0x05); -1 when absent
+// An I2C device answers at addr (the Advanced kit's modules: vision 0x52, voice 0x34).
+bool i2c_present(uint8_t addr);
 // The QMI8658 (qmi8658.h, linorobot2-cockpit's driver): false when the chip does not
 // answer or does not take the configuration.
 bool imu_begin();

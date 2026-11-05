@@ -34,6 +34,25 @@ its firmware is not for this board.
 
 The pins and buses match Hiwonder's published sketch for the board, taken as interface facts (no code copied).
 
+## The Advanced kit (from Hiwonder's published sources; not yet on a robot)
+
+The Advanced kit adds modules to the same ESP32 controller. What the vendor's sketches show (facts read from
+github.com/Hiwonder/MiniHexa, none of its code used):
+
+| module | connects | what it gives |
+|---|---|---|
+| ESP32-S3 vision module | I2C 0x52, the controller's bus (100 kHz) | detection runs on the module, one task per module firmware: colour (reg 0x00-0x03: the largest red / green / blue / purple blob; 0x04: ids 1-4), face (0x01), line (0xA0-0xA7: per colour, image rows 0-39 and 40-79). A read is one register byte written, then 4 bytes: centre x, centre y, width, height (pixels of a 160×120 frame for colour and line, 240×240 for face; all 0: nothing). Polled every 20-50 ms. Video over Wi-Fi is a separate module firmware (its own access point, an HTTP MJPEG stream on port 81), not the detecting one |
+| WonderEcho voice module | I2C 0x34 | offline speech recognition: reg 100 (0x64), 1 byte, the recognised command id (0: none); speech: 2 bytes `[type, id]` to reg 110 (0x6E), type 0x00 a command phrase or 0xFF an announcement. Polled every ~100 ms; the sketches speak at most every 1.5-3 s |
+| touch | GPIO18, low = touched | |
+| 2 × infrared obstacle | GPIO18 and GPIO32, low = obstacle (high = no reflection, used as an edge) | GPIO18 is shared with touch: one or the other per port |
+| 16×8 LED dot matrix | TM1640-style two wire, GPIO14 clock, GPIO32 data | GPIO32 is shared with the second infrared sensor |
+
+Board revisions: V1.0 reads the battery from the I2C monitor at 0x46, V1.1 through GPIO33 behind 100k/10k; the
+fourth expansion pin is GPIO33 on V1.0 and GPIO14 on V1.1. The firmware names what answers in its boot line
+(`modules: imu, sonar, vision 0x52, voice 0x34`). Planned: `/vision/detections` (the module's boxes),
+`/voice/command` and a speech topic, `/touch` and `/ir` (std_msgs/Bool); each needs a publisher or
+subscription more in `esp32.meta`.
+
 ## Sources
 
 - Amazon listing B0FMF3Z5W1 (sold by LewanSoul, Hiwonder's store)

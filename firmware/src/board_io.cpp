@@ -113,6 +113,12 @@ void imu_status(Print& out) {
                qmi.temperature_c());
 }
 
+bool i2c_present(uint8_t addr) {
+    begin();
+    Wire.beginTransmission(addr);
+    return Wire.endTransmission() == 0;
+}
+
 int imu_who_am_i() {
     begin();
     uint8_t b;
