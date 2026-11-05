@@ -42,6 +42,44 @@ bool rigid_2d(const Vec3* before, const Vec3* now, const bool* use, double* dx, 
     return true;
 }
 
+BodyPose clamp_pose(const BodyPose& p, const PoseLimits& l) {
+    auto c = [](float v, float m) { return v > m ? m : v < -m ? -m : v; };
+    return {c(p.x, l.xy), c(p.y, l.xy), c(p.z, l.z), c(p.roll, l.angle), c(p.pitch, l.angle), c(p.yaw, l.angle)};
+}
+
+namespace {
+// R = Rz(yaw) Ry(pitch) Rx(roll), applied to v (or its transpose, inverse = true).
+Vec3 rotate(const BodyPose& p, const Vec3& v, bool inverse) {
+    const float cr = std::cos(p.roll), sr = std::sin(p.roll), cp = std::cos(p.pitch), sp = std::sin(p.pitch),
+                cy = std::cos(p.yaw), sy = std::sin(p.yaw);
+    const float r[3][3] = {{cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr},
+                           {sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr},
+                           {-sp, cp * sr, cp * cr}};
+    const float in[3] = {v.x, v.y, v.z};
+    float o[3];
+    for (int i = 0; i < 3; ++i)
+        o[i] = inverse ? r[0][i] * in[0] + r[1][i] * in[1] + r[2][i] * in[2]
+                       : r[i][0] * in[0] + r[i][1] * in[1] + r[i][2] * in[2];
+    return {o[0], o[1], o[2]};
+}
+
+float approach(float v, float to, float step) { return v < to ? std::fmin(to, v + step) : std::fmax(to, v - step); }
+}  // namespace
+
+Vec3 to_posed_body(const BodyPose& p, const Vec3& f) { return rotate(p, {f.x - p.x, f.y - p.y, f.z - p.z}, true); }
+
+Vec3 from_posed_body(const BodyPose& p, const Vec3& b) {
+    const Vec3 v = rotate(p, b, false);
+    return {v.x + p.x, v.y + p.y, v.z + p.z};
+}
+
+bool SimRobot::pose_settled() const {
+    const BodyPose& a = pose_;
+    const BodyPose& b = pose_target_;
+    return rest_s_ == 0 && a.x == b.x && a.y == b.y && a.z == b.z && a.roll == b.roll && a.pitch == b.pitch &&
+           a.yaw == b.yaw;
+}
+
 bool SimRobot::init(double slip, const GaitParams& gp, const SimServoParams& sp) {
     g_ = &minihexa_geometry();
     slip_ = slip;
@@ -76,7 +114,7 @@ void SimRobot::set_trims(const int16_t* by_servo_id) {
 void SimRobot::actual_feet(Vec3* out, bool* contact) const {
     for (int leg = 0; leg < kLegs; ++leg) {
         LegAngles a{servo_[leg * 3].angle(), servo_[leg * 3 + 1].angle(), servo_[leg * 3 + 2].angle()};
-        out[leg] = leg_fk(*g_, leg, a);
+        out[leg] = from_posed_body(pose_applied_, leg_fk(*g_, leg, a));
         contact[leg] = out[leg].z <= g_->stand_z + 0.003f;
     }
 }
@@ -94,6 +132,15 @@ StepCounts SimRobot::step(float dt, float now_s) {
     const float r = rest_s_ * rest_s_ * (3 - 2 * rest_s_);  // smoothstep: no jerk at either end
     const BodyTwist ap = gait_.applied();
     odom_.apply_body(ap.vx * dt, ap.vy * dt, ap.wz * dt);
+    // The pose moves toward its target at the limits' rates, and is eased out while lying down
+    // (the rest pose is a neutral body's).
+    const PoseLimits lim;
+    const float ds = lim.speed * dt, da = lim.turn * dt;
+    pose_ = {approach(pose_.x, pose_target_.x, ds),        approach(pose_.y, pose_target_.y, ds),
+             approach(pose_.z, pose_target_.z, ds),        approach(pose_.roll, pose_target_.roll, da),
+             approach(pose_.pitch, pose_target_.pitch, da), approach(pose_.yaw, pose_target_.yaw, da)};
+    const float keep = 1 - r;
+    pose_applied_ = {pose_.x * keep, pose_.y * keep, pose_.z * keep, pose_.roll * keep, pose_.pitch * keep, pose_.yaw * keep};
 
     for (int leg = 0; leg < kLegs; ++leg) {
         LegAngles a;
@@ -105,6 +152,7 @@ StepCounts SimRobot::step(float dt, float now_s) {
             const Vec3 down{h.x + (f.x - h.x) * k, h.y + (f.y - h.y) * k, rp_.z};
             f = {f.x + (down.x - f.x) * r, f.y + (down.y - f.y) * r, f.z + (down.z - f.z) * r};
         }
+        f = to_posed_body(pose_applied_, f);
         if (!leg_ik(*g_, leg, f, &a)) { ++n.unreachable; continue; }
         const float ang[3] = {a.coxa, a.femur, a.tibia};
         for (int j = 0; j < 3; ++j) {
@@ -120,7 +168,7 @@ StepCounts SimRobot::step(float dt, float now_s) {
 
     Vec3 feet[kLegs];
     bool contact[kLegs], both[kLegs];
-    actual_feet(feet, contact);
+    actual_feet(feet, contact);  // in the stance frame (the pose undone)
     for (int i = 0; i < kLegs; ++i) both[i] = contact[i] && contact_[i];
     double dx = 0, dy = 0, dyaw = 0;
     if (rigid_2d(feet_, feet, both, &dx, &dy, &dyaw)) {

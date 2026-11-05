@@ -52,6 +52,26 @@ struct StepCounts {
 // standing, the body lowers onto its belly (12-15 mm under the hip axis, measured) and the
 // feet come up off the floor, so the servos hold only the legs. Feet 10 mm under the hip
 // axis, 75 mm out: every femur pulse, trims included, stays >= 38 us inside its clamp.
+// Body pose: the body shifted (x forward, y left, z up, m) and turned (roll, pitch, yaw, rad: yaw
+// about z, then pitch about y, then roll about x) over feet that stay where the gait puts them,
+// standing or walking. Every foot target goes through the inverse before the IK. Asked-for poses
+// are clamped to PoseLimits and reached at its rates (no jerk on the servos); lying down (idle or
+// the final shutdown) eases the pose out first and back in after.
+struct BodyPose {
+    float x = 0, y = 0, z = 0, roll = 0, pitch = 0, yaw = 0;
+};
+struct PoseLimits {
+    float xy = 0.025f, z = 0.020f;  // m
+    float angle = 0.2618f;          // rad (15 deg), each of roll, pitch, yaw
+    float speed = 0.04f;            // m/s
+    float turn = 0.5f;              // rad/s
+};
+BodyPose clamp_pose(const BodyPose& p, const PoseLimits& l = PoseLimits());
+// The foot target f (stance frame: where the neutral body's feet are) seen from the posed body.
+Vec3 to_posed_body(const BodyPose& p, const Vec3& f);
+// And back: a point in the posed body's frame, in the stance frame.
+Vec3 from_posed_body(const BodyPose& p, const Vec3& b);
+
 struct RestParams {
     float reach = 0.075f;  // hip-to-foot, horizontal
     float z = -0.010f;     // foot height in the body frame (stand_z -0.060)
@@ -76,6 +96,12 @@ public:
     void rest(bool on) { rest_want_ = on; }
     // YawHold's trim (TripodGait::set_yaw_trim).
     void set_yaw_trim(float wz) { gait_.set_yaw_trim(wz); }
+    // The body pose to go to (clamped; zero: neutral). pose(): where it is now, as applied (the
+    // rest level eases it out); pose_settled(): at the target and not lying down or between.
+    void set_pose(const BodyPose& p) { pose_target_ = clamp_pose(p); }
+    const BodyPose& pose_target() const { return pose_target_; }
+    const BodyPose& pose() const { return pose_applied_; }
+    bool pose_settled() const;
     // 0 standing .. 1 lying down.
     float rest_level() const { return rest_s_; }
     bool resting() const { return rest_s_ >= 1.0f; }
@@ -119,6 +145,7 @@ private:
     Pose2 truth_, odom_;
     BodyTwist truth_twist_{0, 0, 0};
     RestParams rp_;
+    BodyPose pose_target_, pose_, pose_applied_;
     bool rest_want_ = false;
     float rest_s_ = 0;
 };
