@@ -43,16 +43,19 @@ static void test_ik_fk_round_trip() {
     TEST_ASSERT_EQUAL(6 * 5 * 16 * 4, checked);
 }
 
-// The edge of the envelope: a 40 mm square's corner that lies along the leg, 57 mm
-// outward at ground level, is past full reach (femur + tibia, 125 mm).
-static void test_square_corner_out_of_reach() {
+// The edge of the envelope at standing height: femur + tibia (124 mm) reach 108.5 mm out
+// from the femur pivot 60 mm down, 66.9 mm past the neutral foot along the leg. 2 mm short
+// of that is reachable, 2 mm past it is not.
+static void test_reach_edge_along_the_leg() {
     const Geometry& g = minihexa_geometry();
     const Vec3 n = neutral_foot(g, 0);
     const float c = std::cos(g.hip[0].mount_yaw), s = std::sin(g.hip[0].mount_yaw);
-    const float out = 0.04f * 1.41421356f;
-    const Vec3 p{n.x + out * c, n.y + out * s, n.z};
+    const float edge = std::sqrt((g.femur + g.tibia) * (g.femur + g.tibia) - g.stand_z * g.stand_z) + g.coxa -
+                       g.neutral_reach;
+    TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.0669f, edge);
     LegAngles q;
-    TEST_ASSERT_FALSE(leg_ik(g, 0, p, &q));
+    TEST_ASSERT_TRUE(leg_ik(g, 0, {n.x + (edge - 0.002f) * c, n.y + (edge - 0.002f) * s, n.z}, &q));
+    TEST_ASSERT_FALSE(leg_ik(g, 0, {n.x + (edge + 0.002f) * c, n.y + (edge + 0.002f) * s, n.z}, &q));
 }
 
 static void test_unreachable_refused() {
@@ -150,7 +153,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_neutral_reachable);
     RUN_TEST(test_ik_fk_round_trip);
-    RUN_TEST(test_square_corner_out_of_reach);
+    RUN_TEST(test_reach_edge_along_the_leg);
     RUN_TEST(test_unreachable_refused);
     RUN_TEST(test_neutral_pose_shape);
     RUN_TEST(test_servo_mapping);
