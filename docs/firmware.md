@@ -64,6 +64,7 @@ firmware (`tools/make_nvs.py <settings file> <out.bin>`, flashed at 0x9000; OTA 
 | `agent`, `port` | the micro-ROS agent's IPv4 address and UDP port (default 8888) |
 | `ota_pw` | the OTA password; none: no OTA |
 | `trims` | 18 comma-separated servo trims in µs, by servo id: the vendor's "deviation" values |
+| `idle_s` | seconds without a command that moves before the robot lies down (Gait, below), 0-3600; default 30; `0`: never |
 | `imu_level` | `roll,pitch` in degrees (each within ±10): how the IMU sits on its board, read with the body level (a level on the top plate) from the console's `imu`. Every IMU sample is turned into the body frame with it; none: the board is taken as level |
 
 The settings file carries the Wi-Fi key and the OTA password: keep it private (mode 0600) and out of any
@@ -124,6 +125,15 @@ steps per metre, so fewer touchdowns skid; more overlap helps a little; a higher
 `/gait_params` (`std_msgs/Float32MultiArray`: period s, duty, lift m, longest stride m) changes them at run time.
 They are taken when the gait next stands and only within bounds (period 0.5-3 s, duty 0.5-0.8, lift 10-40 mm,
 stride 10-60 mm); `info` shows the ones in use.
+
+**Idle.** The servo controller has no "servos off": its protocol only sets pulses, and it holds the last ones,
+so the servos are never unpowered while the board is on. To save power the robot lies down instead: after
+`idle_s` seconds (default 30, also from boot) without a `/cmd_vel` that moves, and once the gait stands, the
+body lowers onto its belly over 3 s (feet 75 mm out from each hip, 10 mm under the hip axis; the belly is 12-15
+mm under it) and the feet come up off the floor, so the servos hold only the legs. The next command that moves
+stands it up again over 3 s; commands are taken as zero until it is up, so a stream of `/cmd_vel` walks on from
+there (a single message sent while it lies down is dropped). `info` shows the setting and whether it is up,
+lying down or between. Power off is the robot's switch.
 
 ## AHRS
 

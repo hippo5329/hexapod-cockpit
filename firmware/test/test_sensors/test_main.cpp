@@ -164,6 +164,51 @@ static void test_trims_reach_the_pulses_not_the_model() {
     TEST_ASSERT_FLOAT_WITHIN(0.003f, angle, r.joint_angle(0));
 }
 
+// Idle mode: with this robot's trims, lying down reaches the rest pose with nothing
+// clamped or out of reach; a command that moves stands it up before the gait walks.
+static void test_rest_lies_down_and_stands_up() {
+    SimRobot r;
+    TEST_ASSERT_TRUE(r.init());
+    const int16_t trims[kJoints] = {0, 24, 24, 0, -30, 18, 30, 52, -20, -41, -24, 0, -41, -20, -29, 29, 6, -20};
+    r.set_trims(trims);
+    float t = 0;
+    r.rest(true);
+    for (int i = 0; i < 175; ++i, t += kDt) {  // 3.5 s
+        const StepCounts n = r.step(kDt, t);
+        TEST_ASSERT_EQUAL(0, n.unreachable);
+        TEST_ASSERT_EQUAL(0, n.clamped);
+    }
+    TEST_ASSERT_TRUE(r.resting());
+    const Geometry& g = minihexa_geometry();
+    for (int leg = 0; leg < kLegs; ++leg) {
+        const Vec3 f = leg_fk(g, leg, {r.commanded(leg * 3), r.commanded(leg * 3 + 1), r.commanded(leg * 3 + 2)});
+        TEST_ASSERT_FLOAT_WITHIN(0.0005f, -0.010f, f.z);
+        TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.075f, std::hypot(f.x - g.hip[leg].x, f.y - g.hip[leg].y));
+        TEST_ASSERT_FALSE(r.foot_down(leg));
+    }
+    // Lying still, nothing moves the body, and commands of zero keep it down.
+    const Pose2 before = r.truth();
+    for (int i = 0; i < 100; ++i, t += kDt) {
+        r.command({0, 0, 0}, t);
+        r.step(kDt, t);
+    }
+    TEST_ASSERT_TRUE(r.resting());
+    TEST_ASSERT_EQUAL_DOUBLE(before.x, r.truth().x);
+    // A command that moves: up first (the gait still stands), walking once up.
+    bool walked_while_down = false;
+    int up_at = -1;
+    for (int i = 0; i < 250; ++i, t += kDt) {
+        r.command({0.04f, 0, 0}, t);
+        r.step(kDt, t);
+        if (r.rest_level() > 0 && !r.gait().standing()) walked_while_down = true;
+        if (up_at < 0 && r.rest_level() == 0) up_at = i;
+    }
+    TEST_ASSERT_FALSE(walked_while_down);
+    TEST_ASSERT_TRUE(up_at > 0 && up_at <= 151);  // 3 s up
+    TEST_ASSERT_FALSE(r.gait().standing());
+    TEST_ASSERT_TRUE(r.odom().x > 0.01);
+}
+
 // A board mounted like the simulated one: the tilt read off a still minute, then every sample
 // turned back into the body frame: gravity on +z, a turn's rate on z.
 static void test_imu_mount_levels_the_board() {
@@ -219,5 +264,6 @@ int main() {
     RUN_TEST(test_range_follows_the_walk);
     RUN_TEST(test_trims_reach_the_pulses_not_the_model);
     RUN_TEST(test_imu_mount_levels_the_board);
+    RUN_TEST(test_rest_lies_down_and_stands_up);
     return UNITY_END();
 }

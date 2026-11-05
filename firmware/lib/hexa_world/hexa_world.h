@@ -47,6 +47,17 @@ struct StepCounts {
     int clamped = 0;      // joint pulses clamped to the servo range
 };
 
+// Rest: the idle mode. The servo controller has no "servos off" (its protocol only sets
+// pulses, and it holds the last ones), so the robot saves power by lying down: with the gait
+// standing, the body lowers onto its belly (12-15 mm under the hip axis, measured) and the
+// feet come up off the floor, so the servos hold only the legs. Feet 10 mm under the hip
+// axis, 75 mm out: every femur pulse, trims included, stays >= 38 us inside its clamp.
+struct RestParams {
+    float reach = 0.075f;  // hip-to-foot, horizontal
+    float z = -0.010f;     // foot height in the body frame (stand_z -0.060)
+    float time_s = 3.0f;   // down, and up again
+};
+
 class SimRobot {
 public:
     // Standing on the gait's neutral stance, servos already there. False if that
@@ -58,7 +69,14 @@ public:
     // calibration, so in simulation a trim moves nothing.
     void set_trims(const int16_t* by_servo_id);
 
-    void command(const BodyTwist& cmd, float now_s) { gait_.command(cmd, now_s); }
+    // A command that moves wakes a resting robot: it stands up first (the gait gets zero
+    // until it is up), then walks.
+    void command(const BodyTwist& cmd, float now_s);
+    // Lie down (taken once the gait stands) or stand up again.
+    void rest(bool on) { rest_want_ = on; }
+    // 0 standing .. 1 lying down.
+    float rest_level() const { return rest_s_; }
+    bool resting() const { return rest_s_ >= 1.0f; }
     // The gait's parameters, taken only while it stands (TripodGait::set_params).
     bool set_gait_params(const GaitParams& p) {
         if (!gait_.set_params(p)) return false;
@@ -98,6 +116,9 @@ private:
     bool contact_[kLegs];
     Pose2 truth_, odom_;
     BodyTwist truth_twist_{0, 0, 0};
+    RestParams rp_;
+    bool rest_want_ = false;
+    float rest_s_ = 0;
 };
 
 }  // namespace hexa

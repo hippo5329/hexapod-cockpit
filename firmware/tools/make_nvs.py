@@ -14,6 +14,7 @@ the OTA password, so keep it private (mode 0600) and out of any public repositor
     ota_pw   OTA password (none: no OTA)
     trims    18 comma-separated servo trims in us (by servo id 1-18, each within +-200): the
              vendor's "deviation" values, read off the robot before its firmware is replaced
+    idle_s   seconds without a command that moves before the robot lies down (default 30; 0: never)
     imu_level  roll,pitch of the IMU on its board, degrees (each within +-10), read with the body
              level (a level on the top plate) from the console's `imu`: every sample is turned
              into the body frame
@@ -30,7 +31,7 @@ import sys
 import tempfile
 
 NVS_SIZE = 0x5000
-STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level"}
+STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level", "idle_s"}
 CHOICES = {"app": {"base", "console"}, "link": {"serial", "wifi"}, "sim": {"0", "1"}}
 
 
@@ -58,6 +59,8 @@ def load(path):
             ipaddress.IPv4Address(vals.get("agent", ""))
         except ValueError:
             sys.exit("link=wifi needs agent as an IPv4 address")
+    if "idle_s" in vals and not (vals["idle_s"].isdigit() and int(vals["idle_s"]) <= 3600):
+        sys.exit("idle_s must be 0-3600 (seconds)")
     if "imu_level" in vals:
         f = [t.strip() for t in vals["imu_level"].split(",")]
         try:

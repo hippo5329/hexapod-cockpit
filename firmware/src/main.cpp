@@ -160,6 +160,12 @@ void robot_init() {
 // are. Checked on the robot: gravity on +z at rest; the sign of z against a commanded turn.
 bool real_imu = false;
 
+// Idle mode (SimRobot::rest): after idle_s (NVS "idle_s", default 30; 0: never) without a
+// command that moves, the robot lies down on its belly; the next command that moves stands it
+// up, then walks. From boot too: a robot left on lies down after idle_s.
+uint32_t idle_s = 30;
+float last_move_s = 0;
+
 // New gait parameters from gait_params, waiting for the gait to stand (gait_callback).
 GaitParams pending_gait;
 bool gait_pending = false;
@@ -181,6 +187,7 @@ float sonar_clamped(float metres) {
 
 void robot_tick(float now_s) {
     if (gait_pending && robot.set_gait_params(pending_gait)) gait_pending = false;
+    if (idle_s && now_s - last_move_s > idle_s) robot.rest(true);
     unreachable += robot.step(kTickS, now_s).unreachable;
     if (sim_mode) {
         imu_sample = sim_imu.step(kTickS, robot.truth_twist());
@@ -263,9 +270,11 @@ void cmd_callback(const void* msg) {
 #else
     const geometry_msgs__msg__Twist& t = *static_cast<const geometry_msgs__msg__Twist*>(msg);
 #endif
+    const float now_s = millis() / 1000.0f;
+    if (t.linear.x != 0 || t.linear.y != 0 || t.angular.z != 0) last_move_s = now_s;
     robot.command({static_cast<float>(t.linear.x), static_cast<float>(t.linear.y),
                   static_cast<float>(t.angular.z)},
-                 millis() / 1000.0f);
+                 now_s);
 }
 
 void gait_callback(const void* msg) {
@@ -590,6 +599,8 @@ void console_info() {
     const GaitParams& gp = robot.gait_params();
     Serial.printf("gait period %.2f s  duty %.2f  lift %.3f m  max stride %.3f m%s\n", gp.period_s, gp.duty, gp.lift,
                   gp.max_stride, gait_pending ? "  (new ones pending: applied when it stands)" : "");
+    Serial.printf("idle rest after %u s (0: never)  now %s\n", static_cast<unsigned>(idle_s),
+                  robot.resting() ? "lying down" : robot.rest_level() > 0 ? "between" : "up");
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
     hexa_link::print_status(Serial);
 }
@@ -754,6 +765,12 @@ void setup() {
     }
     const String trims_csv = prefs.getString("trims", "");
     if (!trims_csv.isEmpty() && !parse_trims(trims_csv, trims)) Serial.println("trims: NVS value refused, none used");
+    long idle = 0;
+    const String idle_str = prefs.getString("idle_s", "");
+    if (!idle_str.isEmpty()) {
+        if (parse_int(idle_str, &idle) && idle >= 0 && idle <= 3600) idle_s = static_cast<uint32_t>(idle);
+        else Serial.println("idle_s: NVS value refused, 30 s used");
+    }
     const String level_csv = prefs.getString("imu_level", "");
     if (!level_csv.isEmpty() && !parse_imu_level(level_csv, &imu_mount))
         Serial.println("imu_level: NVS value refused, the board taken as level");
