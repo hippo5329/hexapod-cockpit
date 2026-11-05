@@ -191,7 +191,8 @@ shows the floor. The power switch still cuts everything.
 
 **Sonar lights.** In real mode the ultrasonic is read at 10 Hz with or without an agent, and its two lights show
 what it sees: blue clear, yellow under 0.40 m, red under 0.20 m (20 mm of hysteresis), each change logged;
-dim green while the robot lies down (idle mode), and off at the final shutdown (the module stays powered). It is
+a green heartbeat while the robot lies down (idle mode: a "lub-dub" double pulse every 1.6 s, never fully
+dark, so a robot lying still shows it is alive), and off at the final shutdown (the module stays powered). It is
 feedback only: stopping for an obstacle is the host's (nav2_collision_monitor or a test's guard). The sonar's cone
 is narrow (15°): a thin table leg beside its axis is not seen.
 

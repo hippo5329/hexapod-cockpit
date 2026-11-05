@@ -516,18 +516,33 @@ void publish_battery() {
 }
 
 // The real ultrasonic at 10 Hz, with or without an agent: the reading for /sonar, and its two
-// lights: blue clear, yellow under kNearM, red under kCloseM (20 mm of hysteresis), dim green
-// while the robot lies down (idle mode), off at the final shutdown. Written only on a change;
-// each obstacle change is logged.
+// lights: blue clear, yellow under kNearM, red under kCloseM (20 mm of hysteresis), a green
+// heartbeat while the robot lies down (idle mode: idle_heartbeat), off at the final shutdown.
+// Solid colours are written only on a change; each obstacle change is logged.
 constexpr float kNearM = 0.40f, kCloseM = 0.20f;
 enum Light { kClear, kNear, kClose, kIdle, kOff };
 int sonar_level = -1;  // kClear, kNear, kClose by range; -1 none yet
 int light_shown = -1;
 void sonar_light(int light) {
     if (light == light_shown) return;
+    if (light == kIdle) {  // drawn by idle_heartbeat()
+        light_shown = kIdle;
+        return;
+    }
     static const uint8_t rgb[5][3] = {{0, 0, 255}, {255, 160, 0}, {255, 0, 0}, {0, 24, 0}, {0, 0, 0}};
     if (board_io::sonar_rgb(rgb[light][0], rgb[light][1], rgb[light][2])) light_shown = light;  // else next read
 }
+// Idle: a heartbeat on the lights ("lub-dub" every 1.6 s, green, never fully dark), so a robot
+// lying still shows it is alive: a frozen board leaves a steady light. 25 Hz, two I2C writes
+// (~1.5 ms at 100 kHz) while it lies down only.
+void idle_heartbeat(float t) {
+    const float ph = std::fmod(t, 1.6f);
+    auto bump = [](float x, float c) { return std::exp(-((x - c) / 0.07f) * ((x - c) / 0.07f)); };
+    const uint8_t g = static_cast<uint8_t>(6 + 90 * (bump(ph, 0.15f) + 0.6f * bump(ph, 0.45f)));
+    static uint8_t last = 0;
+    if (g != last && board_io::sonar_rgb(0, g, 0)) last = g;
+}
+
 void read_sonar() {
     const int mm = board_io::sonar_mm();
     if (mm >= 0) {  // a bus error keeps the last reading
@@ -660,6 +675,7 @@ void base_loop() {
         robot_tick(now / 1000.0f);
         ++frame;
         if (real_sonar && frame % 5 == 0) read_sonar();
+        if (real_sonar && light_shown == kIdle && frame % 2 == 0) idle_heartbeat(now / 1000.0f);
         // Idle and the gait's backstop, in the log.
         static bool was_resting = false;
         static int forced = 0;

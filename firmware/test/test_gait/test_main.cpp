@@ -120,7 +120,8 @@ static void test_stop_settles_for_every_duty_and_period() {
             }
             g.command({0, 0, 0}, t);
             float waited = 0;
-            while (!g.standing() && waited < 2 * period + kDt) {
+            const float cycle = g.period();  // adaptive cadence: the cycle in use when it stopped
+            while (!g.standing() && waited < 2 * cycle + kDt) {
                 g.step(kDt, t);
                 t += kDt;
                 waited += kDt;
