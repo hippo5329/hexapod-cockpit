@@ -659,7 +659,11 @@ void setup() {
     // The real IMU in real mode only: sim mode publishes the simulated one, never both.
     if (!sim_mode) {
         real_imu = board_io::imu_begin();
-        real_sonar = board_io::sonar_mm() >= 0;
+        // The module may be measuring and not answer one read: it is there if any of 10 do.
+        for (int i = 0; i < 10 && !real_sonar; ++i) {
+            real_sonar = board_io::sonar_mm() >= 0;
+            if (!real_sonar) delay(50);
+        }
     }
     const String trims_csv = prefs.getString("trims", "");
     if (!trims_csv.isEmpty() && !parse_trims(trims_csv, trims)) Serial.println("trims: NVS value refused, none used");
