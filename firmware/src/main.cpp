@@ -38,14 +38,15 @@
 // The entity limits are compiled into libmicroros from esp32.meta, and micro_ros_platformio
 // builds that library only when it is missing: a raised limit does not reach a cached build.
 // Sim mode creates 6 publishers (joint_states, odom/gait, battery, imu/data, sonar, ground
-// truth) and 3 subscriptions; with a stale library the 6th failed and every session was torn
+// truth) and 4 subscriptions; with a stale library the 6th failed and every session was torn
 // down at once. Delete .pio/libdeps/<env>/micro_ros_platformio/libmicroros after editing the meta.
 static_assert(RMW_UXRCE_MAX_PUBLISHERS >= 6, "libmicroros built with fewer publishers than esp32.meta: rebuild it");
-static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 3, "libmicroros built with fewer subscriptions than esp32.meta: rebuild it");
+static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 4, "libmicroros built with fewer subscriptions than esp32.meta: rebuild it");
 #include <nav_msgs/msg/odometry.h>
 #include <sensor_msgs/msg/battery_state.h>
 #include <std_msgs/msg/float32_multi_array.h>
 #include <std_msgs/msg/string.h>
+#include <geometry_msgs/msg/pose.h>
 #include <sensor_msgs/msg/imu.h>
 #include <sensor_msgs/msg/joint_state.h>
 #include <sensor_msgs/msg/range.h>
@@ -232,7 +233,7 @@ void robot_tick(float now_s) {
         imu_mount.apply(&imu_sample);  // the same path as the real board's (unset: as mounted)
         // Every sample, connected or not: the estimates are settled when a session starts.
         // The gyro's bias is learned while the gait stands and taken out of every sample.
-        gyro_bias.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, robot.gait().standing(), kTickS);
+        gyro_bias.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, robot.gait().standing() && robot.pose_settled(), kTickS);
         gyro_bias.correct(&imu_sample.gx, &imu_sample.gy, &imu_sample.gz);
         ahrs.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, imu_sample.ax, imu_sample.ay, imu_sample.az,
                     kTickS);
@@ -243,7 +244,7 @@ void robot_tick(float now_s) {
             imu_mount.apply(&imu_sample);
             // Commanded standing, not measured: the servos lag the gait by a little; the learner
             // waits 0.5 s of standing before it learns.
-            gyro_bias.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, robot.gait().standing(), kTickS);
+            gyro_bias.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, robot.gait().standing() && robot.pose_settled(), kTickS);
             gyro_bias.correct(&imu_sample.gx, &imu_sample.gy, &imu_sample.gz);
             ahrs.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, imu_sample.ax, imu_sample.ay, imu_sample.az,
                         kTickS);
@@ -273,7 +274,7 @@ rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
 rclc_executor_t executor;
-rcl_subscription_t cmd_sub, gait_sub, shutdown_sub;
+rcl_subscription_t cmd_sub, gait_sub, shutdown_sub, pose_sub;
 // gait_params (std_msgs/Float32MultiArray): period s, duty, lift m, max stride m. Applied when
 // the gait next stands, if valid (TripodGait::params_valid); the console's `info` shows them.
 std_msgs__msg__Float32MultiArray gait_msg;
@@ -282,6 +283,9 @@ float gait_msg_data[8];
 // ignored, so a stray empty message on the topic does not put the robot to sleep.
 std_msgs__msg__String shutdown_msg;
 char shutdown_msg_data[16];
+// body_pose (geometry_msgs/Pose): the body's shift (position, m) and turn (orientation) over planted
+// feet (hexa_world.h BodyPose; clamped, and only as far as the legs reach). Kept until the next one.
+geometry_msgs__msg__Pose pose_msg;
 
 rcl_publisher_t joint_pub, odom_pub, imu_pub, sonar_pub, truth_pub, battery_pub;
 #ifdef HEXA_CMD_VEL_STAMPED
@@ -336,6 +340,29 @@ void gait_callback(const void* msg) {
 void shutdown_callback(const void* msg) {
     const auto* m = static_cast<const std_msgs__msg__String*>(msg);
     if (m->data.size == 8 && strncmp(m->data.data, "shutdown", 8) == 0) shutdown_request("/shutdown");
+}
+
+void set_body_pose(const BodyPose& p, const char* from) {
+    robot.set_pose(p);
+    const BodyPose& t = robot.pose_target();
+    hexa_log::log(hexa_log::kInfo, "pose (%s): roll %+.1f pitch %+.1f yaw %+.1f deg  x %+.0f y %+.0f z %+.0f mm", from,
+                  t.roll * RAD_TO_DEG, t.pitch * RAD_TO_DEG, t.yaw * RAD_TO_DEG, t.x * 1000, t.y * 1000, t.z * 1000);
+}
+
+void pose_callback(const void* msg) {
+    const auto* m = static_cast<const geometry_msgs__msg__Pose*>(msg);
+    const auto& q = m->orientation;
+    const double n = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+    if (!(n > 0.5 && n < 1.5)) return;  // not a rotation
+    const double w = q.w / n, x = q.x / n, y = q.y / n, z = q.z / n;
+    BodyPose p;
+    p.roll = std::atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
+    p.pitch = std::asin(std::fmax(-1.0, std::fmin(1.0, 2 * (w * y - z * x))));
+    p.yaw = std::atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
+    p.x = m->position.x;
+    p.y = m->position.y;
+    p.z = m->position.z;
+    set_body_pose(p, "/body_pose");
 }
 
 void msgs_init() {
@@ -397,6 +424,9 @@ bool entities_create() {
     if (rclc_subscription_init_default(&shutdown_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
                                        "shutdown") != RCL_RET_OK)
         return false;
+    if (rclc_subscription_init_default(&pose_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Pose),
+                                       "body_pose") != RCL_RET_OK)
+        return false;
     if (rclc_publisher_init_best_effort(&joint_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState),
                                         "joint_states") != RCL_RET_OK)
         return false;
@@ -422,13 +452,15 @@ bool entities_create() {
             return false;
     }
     executor = rclc_executor_get_zero_initialized_executor();
-    if (rclc_executor_init(&executor, &support.context, 3, &allocator) != RCL_RET_OK) return false;
+    if (rclc_executor_init(&executor, &support.context, 4, &allocator) != RCL_RET_OK) return false;
     if (rclc_executor_add_subscription(&executor, &cmd_sub, &cmd_msg, &cmd_callback, ON_NEW_DATA) != RCL_RET_OK)
         return false;
     if (rclc_executor_add_subscription(&executor, &gait_sub, &gait_msg, &gait_callback, ON_NEW_DATA) != RCL_RET_OK)
         return false;
     if (rclc_executor_add_subscription(&executor, &shutdown_sub, &shutdown_msg, &shutdown_callback, ON_NEW_DATA) !=
         RCL_RET_OK)
+        return false;
+    if (rclc_executor_add_subscription(&executor, &pose_sub, &pose_msg, &pose_callback, ON_NEW_DATA) != RCL_RET_OK)
         return false;
     rmw_uros_sync_session(1000);
     return true;
@@ -446,6 +478,7 @@ void entities_destroy() {
     rcl_subscription_fini(&cmd_sub, &node);
     rcl_subscription_fini(&gait_sub, &node);
     rcl_subscription_fini(&shutdown_sub, &node);
+    rcl_subscription_fini(&pose_sub, &node);
     rclc_executor_fini(&executor);
     rcl_node_fini(&node);
     rclc_support_fini(&support);
@@ -666,11 +699,12 @@ void base_loop() {
         last_report = t_start;
         hexa_log::log(hexa_log::kInfo,
                       "health: battery %d mV  rssi %d dBm  sessions %u  loop max %u ms  late ticks %u  gait %s  "
-                      "cycle %.2f s  yaw lost %+.3f rad  sonar %.2f m  unreachable %u",
+                      "cycle %.2f s  yaw lost %+.3f rad  pose %+.0f/%+.0f/%+.0f deg %+.0f mm  sonar %.2f m  unreachable %u",
                       battery_mv, static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(sessions),
                       static_cast<unsigned>(loop_max_ms), static_cast<unsigned>(late_ticks),
                       robot.resting() ? "lying" : robot.rest_level() > 0 ? "between" : robot.gait().standing() ? "standing" : "walking",
-                      robot.gait().period(), yaw_hold.error(), sonar_msg.range, static_cast<unsigned>(unreachable));
+                      robot.gait().period(), yaw_hold.error(), robot.pose().roll * RAD_TO_DEG,
+                      robot.pose().pitch * RAD_TO_DEG, robot.pose().yaw * RAD_TO_DEG, robot.pose().z * 1000, sonar_msg.range, static_cast<unsigned>(unreachable));
         loop_max_ms = late_ticks = 0;
     }
     agent_step();
@@ -749,6 +783,10 @@ void console_info() {
                   gp.max_period_s, robot.gait().period(), gp.duty, gp.lift, gp.max_stride,
                   gait_pending ? "  (new ones pending: applied when it stands)" : "");
     Serial.printf("yaw hold gain %.2f /s (0: off)\n", yaw_hold.params().gain);
+    const BodyPose& bp = robot.pose();
+    Serial.printf("body pose roll %+.1f pitch %+.1f yaw %+.1f deg  x %+.0f y %+.0f z %+.0f mm%s\n", bp.roll * RAD_TO_DEG,
+                  bp.pitch * RAD_TO_DEG, bp.yaw * RAD_TO_DEG, bp.x * 1000, bp.y * 1000, bp.z * 1000,
+                  robot.pose_settled() ? "" : " (moving)");
     Serial.printf("idle rest after %u s (0: never)  now %s\n", static_cast<unsigned>(idle_s),
                   robot.resting() ? "lying down" : robot.rest_level() > 0 ? "between" : "up");
     Serial.printf("shutdown when the battery stays under %d mV for 30 s (0: never)  battery %d mV\n",
@@ -859,12 +897,22 @@ void console_command(String cmd) {
         }
     } else if (cmd == "reboot") {
         ESP.restart();
+    } else if (cmd.startsWith("pose")) {
+        // The body pose from the console (base app on Wi-Fi): roll pitch yaw in degrees, x y z in mm;
+        // "pose" alone goes back to neutral.
+        float v[6] = {0, 0, 0, 0, 0, 0};
+        const int got = sscanf(cmd.c_str() + 4, "%f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]);
+        if (console) Serial.println("refused: the console app drives no gait");
+        else if (got > 0 || cmd == "pose")
+            set_body_pose({v[3] / 1000, v[4] / 1000, v[5] / 1000, v[0] * DEG_TO_RAD, v[1] * DEG_TO_RAD, v[2] * DEG_TO_RAD},
+                          "console");
+        else Serial.println("usage: pose [roll pitch yaw (deg) [x y z (mm)]]");
     } else if (cmd == "shutdown") {
         // The base app lies down first; the console drives no gait, so it sleeps at once.
         if (console) deep_sleep();
         else shutdown_request("console");
     } else if (cmd.length()) {
-        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | foot <leg> <dx> <dy> <dz> [ms] | trims | bat | sonar | imu | app base|console | sim on|off | reboot | shutdown");
+        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | foot <leg> <dx> <dy> <dz> [ms] | trims | bat | sonar | imu | app base|console | sim on|off | reboot | shutdown | pose [r p y [x y z]]");
     }
 }
 

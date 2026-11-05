@@ -38,12 +38,12 @@ The libraries have no Arduino dependency, so the firmware, the tests, the host s
 The NVS key `app` picks what boots:
 
 - **base**: micro-ROS over USB serial at 921600 baud, or over Wi-Fi (below). Subscribes `/cmd_vel`,
-  `/gait_params` and `/shutdown`; publishes the topics below. The gait runs at 50 Hz with or without an agent. A `/cmd_vel`
+  `/gait_params`, `/shutdown` and `/body_pose`; publishes the topics below. The gait runs at 50 Hz with or without an agent. A `/cmd_vel`
   stream that stops for 0.5 s counts as zero: the robot finishes its steps and stands.
 - **console**: line commands on the USB serial port. On a Wi-Fi link the port is free, so the base application
   takes the same commands there too. `info` (chip, revision, flash size, MAC, last reset, mode, IMU, sonar,
   gait, link), `link`, `i2c` (bus scan), `bat`, `sonar`, `imu`, `trims`, `app base|console`, `sim on|off`,
-  `reboot`, `shutdown` (the final shutdown, below). Bench commands, sim mode only (the robot on a stand):
+  `reboot`, `shutdown` (the final shutdown, below), `pose [roll pitch yaw (deg) [x y z (mm)]]` (Body pose). Bench commands, sim mode only (the robot on a stand):
   `servo <id> <us> [ms]` moves one servo; `foot <leg> <dx> <dy> <dz> [ms]` moves one leg's foot by
   millimetres from its standing position, body frame, through the gait's IK and the servo calibration.
 
@@ -197,6 +197,15 @@ shows the floor. The power switch still cuts everything.
 
     ros2 topic pub --once /shutdown std_msgs/msg/String "{data: shutdown}"
 
+**Body pose.** `/body_pose` (or the console's `pose`) shifts the body (x forward, y left, z up: ±25, ±25,
+±20 mm) and turns it (roll, pitch, yaw: ±15° each) over feet that stay where the gait puts them: every foot
+target goes through the inverse pose before the IK, standing or walking. It is reached at 40 mm/s and 0.5 rad/s,
+and only as far as every foot stays reachable with no pulse clamped: each axis alone reaches its limit standing,
+all six at once about 70 % of them, so a combined pose stops where the legs end. While walking a fifth of it is
+kept (every corner is reachable at top speed). Lying down eases it out and standing up brings it back. It is not
+locomotion: odometry does not see it, and the gyro's bias is learned only while it is still. `info` and the
+`health` line show it.
+
 **Sonar lights.** In real mode the ultrasonic is read at 10 Hz with or without an agent, and its two lights show
 what it sees: blue clear, yellow under 0.40 m, red under 0.20 m (20 mm of hysteresis), each change logged;
 a green heartbeat while the robot lies down (idle mode: a "lub-dub" double pulse every 1.6 s, never fully
@@ -246,6 +255,7 @@ the same code. A real QMI8658A will need dt from the sample timestamps.
 | `/odom/gait` | `nav_msgs/Odometry` | integrated commanded body twist (dead reckoning, no slip), `odom` → `base_footprint`; covariances below |
 | `/gait_params` | `std_msgs/Float32MultiArray` | subscribed: the gait's parameters (above) |
 | `/shutdown` | `std_msgs/String` | subscribed: data `shutdown` = the final shutdown (above) |
+| `/body_pose` | `geometry_msgs/Pose` | subscribed: the body's shift (position, m) and turn (orientation) over planted feet (Body pose, below) |
 | `/imu/data` | `sensor_msgs/Imu` | 50 Hz, gyro bias taken out, with the AHRS's orientation (above). Sim: the simulated QMI8658A ([simulation.md](simulation.md)); real: the QMI8658 (±8 g, ±1024 dps, 224 Hz, on-chip low-pass ~30 Hz), in the body frame (the robot's `imu_level`) |
 | `/sonar` | `sensor_msgs/Range` | 10 Hz. Sim: the simulated ultrasonic; real: the I2C module. Nothing within reach reads `max_range`, never +INF (`nav2_collision_monitor` treats an out-of-span reading as an invalid source and stops) |
 | `/battery` | `sensor_msgs/BatteryState` | 1 Hz, the pack's voltage from the board's monitor (both modes; only when it answers) |
