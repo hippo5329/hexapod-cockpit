@@ -125,7 +125,7 @@ static void test_rest_eases_the_pose_and_rates_hold() {
     for (int i = 0; i < 175; ++i, t += kDt) TEST_ASSERT_EQUAL(0, r.step(kDt, t).unreachable);
     TEST_ASSERT_TRUE(r.resting());
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0, r.pose().roll);
-    TEST_ASSERT_FALSE(r.pose_settled());
+    TEST_ASSERT_TRUE(r.pose_settled());  // lying still: not moving
     r.rest(false);
     for (int i = 0; i < 175; ++i, t += kDt) r.step(kDt, t);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.2f, r.pose().roll);
