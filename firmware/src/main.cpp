@@ -5,7 +5,10 @@
 //            and /sim/ground_truth. The gait
 //            ticks at 50 Hz whether or not the agent is there; a lost command stream
 //            ends in a stand (hexa_gait's timeout), never a frozen stride.
-//   console  line commands on the serial port: info, i2c, app, sim, reboot.
+//   console  line commands on the serial port: info, link, i2c, app, sim, reboot.
+//
+// The link (NVS `link`, link.h): micro-ROS over USB serial, or over UDP on Wi-Fi with
+// ArduinoOTA beside it. On Wi-Fi the console and OTA work in either app.
 //
 // Press BOOT within the first two seconds after a reset to get the console whatever
 // `app` says. Sim mode (NVS `sim`, default on) drives simulated servos; real mode is
@@ -36,6 +39,7 @@
 #include "hexa_ahrs.h"
 #include "hexa_sensors.h"
 #include "hexa_world.h"
+#include "link.h"
 
 using namespace hexa;
 
@@ -43,6 +47,7 @@ namespace {
 
 Preferences prefs;
 bool sim_mode = true;
+hexa_link::Config link_cfg;
 
 // ---------------------------------------------------------------- robot model
 // One model for both modes (hexa_world): gait, IK and pulses. In sim mode its simulated
@@ -274,7 +279,7 @@ void agent_step() {
     const uint32_t now = millis();
     switch (agent) {
         case Agent::kWaiting:
-            if (now - last_check > 500) {
+            if (now - last_check > 500 && hexa_link::network_up()) {
                 last_check = now;
                 if (rmw_uros_ping_agent(100, 1) == RMW_RET_OK) agent = Agent::kAvailable;
             }
@@ -305,10 +310,17 @@ void agent_step() {
     }
 }
 
+void console_info();
+
 void base_setup() {
     robot_init();
     msgs_init();
-    set_microros_serial_transports(Serial);
+    hexa_link::set_microros_transport(link_cfg);
+    // A Wi-Fi link leaves Serial free: say what is running.
+    if (link_cfg.kind == hexa_link::Kind::kWifi) {
+        Serial.println("\nminiHexa base");
+        console_info();
+    }
 }
 
 void base_loop() {
@@ -353,6 +365,7 @@ void console_info() {
     Serial.printf("app %s  sim %s  board %s\n", prefs.getString("app", "base").c_str(), sim_mode ? "on" : "off",
                   HEXA_BOARD_VERIFIED ? "verified" : "NOT identified (real mode refused)");
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
+    hexa_link::print_status(Serial);
 }
 
 void console_i2c() {
@@ -372,6 +385,8 @@ void console_command(String cmd) {
     cmd.trim();
     if (cmd == "info") {
         console_info();
+    } else if (cmd == "link") {
+        hexa_link::print_status(Serial);
     } else if (cmd == "i2c") {
         console_i2c();
     } else if (cmd == "app base" || cmd == "app console") {
@@ -390,7 +405,7 @@ void console_command(String cmd) {
     } else if (cmd == "reboot") {
         ESP.restart();
     } else if (cmd.length()) {
-        Serial.println("commands: info | i2c | app base|console | sim on|off | reboot");
+        Serial.println("commands: info | link | i2c | app base|console | sim on|off | reboot");
     }
 }
 
@@ -438,12 +453,17 @@ void setup() {
     Serial.begin(HEXA_SERIAL_BAUD);
     prefs.begin("hexa", false);
     sim_mode = prefs.getBool("sim", true) || !HEXA_BOARD_VERIFIED;
+    link_cfg = hexa_link::load(prefs);
+    hexa_link::begin(link_cfg);
+    // The loop stops for an update's length; the gait is told to stand first.
+    hexa_link::on_ota([]() { robot.command({0, 0, 0}, millis() / 1000.0f); }, nullptr);
     console = boot_button_pressed(2000) || prefs.getString("app", "base") == "console";
     if (console) console_setup();
     else base_setup();
 }
 
 void loop() {
+    hexa_link::loop();
     if (console) console_loop();
     else base_loop();
 }

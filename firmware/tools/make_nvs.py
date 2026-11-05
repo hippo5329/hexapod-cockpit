@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Write the miniHexa's NVS partition image from a robot settings file.
+
+    make_nvs.py <settings file> <out.bin>
+
+The settings file holds KEY=VALUE lines (# comments allowed); it carries the Wi-Fi key and
+the OTA password, so keep it private (mode 0600) and out of any public repository. Keys:
+
+    app      base | console                    (default base)
+    sim      1 | 0                             (default 1; real mode is refused until the board is verified)
+    link     serial | wifi                     (default serial)
+    ssid     Wi-Fi network (2.4 GHz)           psk      its key
+    agent    micro-ROS agent IPv4 address      port     its UDP port (default 8888)
+    ota_pw   OTA password (none: no OTA)
+
+The image goes to the `nvs` partition (0x9000, 0x5000 bytes) with the firmware, so every
+flash writes the whole robot description fresh. OTA updates leave it in place. Needs the
+esp-idf-nvs-partition-gen package (pip). Nothing from the file is printed.
+"""
+import csv
+import ipaddress
+import os
+import subprocess
+import sys
+import tempfile
+
+NVS_SIZE = 0x5000
+STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw"}
+CHOICES = {"app": {"base", "console"}, "link": {"serial", "wifi"}, "sim": {"0", "1"}}
+
+
+def load(path):
+    vals = {}
+    with open(path) as f:
+        for n, raw in enumerate(f, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, sep, val = line.partition("=")
+            key = key.strip()
+            if not sep or key not in STRINGS | {"sim", "port"}:
+                sys.exit(f"{path}:{n}: not a known KEY=VALUE line")  # the line itself is not shown
+            vals[key] = val.strip()
+    for key, allowed in CHOICES.items():
+        if key in vals and vals[key] not in allowed:
+            sys.exit(f"{key} must be one of {sorted(allowed)}")
+    if "port" in vals and not (vals["port"].isdigit() and 0 < int(vals["port"]) < 65536):
+        sys.exit("port must be 1-65535")
+    if vals.get("link") == "wifi":
+        if not vals.get("ssid"):
+            sys.exit("link=wifi needs ssid")
+        try:
+            ipaddress.IPv4Address(vals.get("agent", ""))
+        except ValueError:
+            sys.exit("link=wifi needs agent as an IPv4 address")
+    for key in ("ssid", "psk"):
+        if len(vals.get(key, "")) > {"ssid": 32, "psk": 63}[key]:
+            sys.exit(f"{key} is too long")
+    return vals
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.exit(__doc__)
+    vals = load(sys.argv[1])
+    rows = [["key", "type", "encoding", "value"], ["hexa", "namespace", "", ""]]
+    for key in sorted(vals):
+        if key == "sim":
+            rows.append([key, "data", "u8", vals[key]])  # Preferences stores a bool as u8
+        elif key == "port":
+            rows.append([key, "data", "u16", vals[key]])
+        else:
+            rows.append([key, "data", "string", vals[key]])
+    old = os.umask(0o077)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "nvs.csv")
+            with open(src, "w", newline="") as f:
+                csv.writer(f).writerows(rows)
+            r = subprocess.run([sys.executable, "-m", "esp_idf_nvs_partition_gen", "generate", src, sys.argv[2],
+                                hex(NVS_SIZE)], capture_output=True, text=True)
+            if r.returncode != 0:
+                sys.exit("nvs_partition_gen failed (rc %d)" % r.returncode)
+    finally:
+        os.umask(old)
+    os.chmod(sys.argv[2], 0o600)
+    print(f"{sys.argv[2]}: {len(vals)} keys ({', '.join(sorted(vals))}), {NVS_SIZE} bytes")
+
+
+if __name__ == "__main__":
+    main()
