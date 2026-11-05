@@ -211,11 +211,16 @@ static void test_yaw_hold_holds_heading_and_turn_rate() {
     const float held = walk_with_slip({0.05f, 0, 0}, 20, true, &odom);
     TEST_ASSERT_FLOAT_WITHIN(0.03f, 0.0f, held);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, odom);  // odometry: no turn, as commanded
-    const float open = walk_with_slip({0, 0, 0.3f}, 10, false, &odom);
-    TEST_ASSERT_FLOAT_WITHIN(0.15f, 0.6f * 3.0f - 0.12f, open);  // ~55 % of the turn
-    const float closed = walk_with_slip({0, 0, 0.3f}, 10, true, &odom);
-    TEST_ASSERT_FLOAT_WITHIN(0.12f, 3.0f, closed);  // the commanded 3 rad, less the first second's lag
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.3f, odom);
+    // A turn below the gait's top rate (0.3 rad/s is already at the stride limit of the 1.5 s cycle:
+    // there the trim has no room, and the robot's 0.3 turns made 0.19).
+    const float open = walk_with_slip({0, 0, 0.15f}, 10, false, &odom);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.6f * 1.5f - 0.12f, open);  // ~52 % of the turn
+    const float closed = walk_with_slip({0, 0, 0.15f}, 10, true, &odom);
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 1.5f, closed);  // the commanded 1.5 rad, less the first second's lag
+    TEST_ASSERT_FLOAT_WITHIN(0.005f, 0.15f, odom);
+    // At the limit the trim cannot add: the gait's command stays clamped, odometry on the clamped rate.
+    walk_with_slip({0, 0, 1.0f}, 5, true, &odom);
+    TEST_ASSERT_FLOAT_WITHIN(1e-3f, gait.target().wz, odom);
 }
 
 // A lost command stream (no zero ever sent) also ends in a stand.
