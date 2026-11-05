@@ -73,6 +73,24 @@ static void test_neutral_pose_shape() {
     TEST_ASSERT_TRUE(a.tibia < 0.0f && a.tibia > -3.1416f);
 }
 
+static void test_servo_bus_frame() {
+    // One servo, id 1 at 1500 us over 500 ms, worked by hand from the frame layout.
+    const hexa::BusServo one{1, 1500};
+    uint8_t f[64];
+    const uint8_t want[] = {0x55, 0x55, 0x01, 0x0A, 0x01, 0x01, 0xF4, 0x01, 0x01, 0xDC, 0x05, 0x8E};
+    TEST_ASSERT_EQUAL(sizeof want, hexa::servo_bus_frame(&one, 1, 500, f, sizeof f));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(want, f, sizeof want);
+    // 18 servos: 4 + 58 + 1 bytes, length byte 61; a short buffer, a bad pulse or count -> 0.
+    hexa::BusServo all[18];
+    for (int i = 0; i < 18; ++i) all[i] = {static_cast<uint8_t>(i + 1), 1500};
+    TEST_ASSERT_EQUAL(63, hexa::servo_bus_frame(all, 18, 100, f, sizeof f));
+    TEST_ASSERT_EQUAL(61, f[3]);
+    TEST_ASSERT_EQUAL(0, hexa::servo_bus_frame(all, 18, 100, f, 62));
+    all[3].us = 2600;
+    TEST_ASSERT_EQUAL(0, hexa::servo_bus_frame(all, 18, 100, f, sizeof f));
+    TEST_ASSERT_EQUAL(0, hexa::servo_bus_frame(all, 0, 100, f, sizeof f));
+}
+
 static void test_servo_mapping() {
     ServoCal c = default_cal(2);  // a tibia: centred at -90 deg
     TEST_ASSERT_EQUAL(1500, angle_to_us(c, -1.57079633f));
@@ -93,5 +111,6 @@ int main() {
     RUN_TEST(test_unreachable_refused);
     RUN_TEST(test_neutral_pose_shape);
     RUN_TEST(test_servo_mapping);
+    RUN_TEST(test_servo_bus_frame);
     return UNITY_END();
 }

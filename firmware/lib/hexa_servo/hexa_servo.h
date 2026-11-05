@@ -1,8 +1,9 @@
-// Joint angle <-> servo pulse, per-joint calibration, and the simulated servo.
-// Plain C++: the hardware output (LEDC, MCPWM or an I2C PWM expander, still unknown
-// on the miniHexa board) lives in the firmware's src/, not here.
+// Joint angle <-> servo pulse, per-joint calibration, the simulated servo, and the frame
+// the miniHexa's servo controller takes. Plain C++: the UART that carries the frames
+// lives in the firmware's src/ (board_io).
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "hexa_kin.h"
@@ -51,5 +52,21 @@ private:
     float target_ = 0.0f;
     int last_us_ = 1500;
 };
+
+// The miniHexa's servo controller (a chip on the base board that makes the 18 pulses) takes
+// frames on a UART: 0x55 0x55, function 0x01, length, then command 0x01 (set servos), count,
+// move time in ms (little-endian), and per servo its id and pulse in us (little-endian),
+// closed by the low byte of the sum of every byte before it. The length byte counts the data
+// plus 3. Servo ids 1-18 are leg*3 + joint + 1 in the vendor's leg numbering.
+struct BusServo {
+    uint8_t id;
+    uint16_t us;
+};
+constexpr int kBusMinUs = 500;
+constexpr int kBusMaxUs = 2500;
+
+// Writes the frame for n servos into out; returns its length, or 0 if it does not fit in
+// cap, n is 0 or above 21, or a pulse is outside [kBusMinUs, kBusMaxUs].
+size_t servo_bus_frame(const BusServo* servos, int n, uint16_t time_ms, uint8_t* out, size_t cap);
 
 }  // namespace hexa

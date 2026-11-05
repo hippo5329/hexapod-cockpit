@@ -5,7 +5,8 @@
 //            and /sim/ground_truth. The gait
 //            ticks at 50 Hz whether or not the agent is there; a lost command stream
 //            ends in a stand (hexa_gait's timeout), never a frozen stride.
-//   console  line commands on the serial port: info, link, i2c, app, sim, reboot.
+//   console  line commands on the serial port: info, link, i2c, servo, bat, sonar, imu, app,
+//            sim, reboot. On a Wi-Fi link the base app takes them too (Serial is free).
 //
 // The link (NVS `link`, link.h): micro-ROS over USB serial, or over UDP on Wi-Fi with
 // ArduinoOTA beside it. On Wi-Fi the console and OTA work in either app.
@@ -35,6 +36,7 @@
 #include <geometry_msgs/msg/twist.h>
 #endif
 
+#include "board_io.h"
 #include "board_minihexa.h"
 #include "hexa_ahrs.h"
 #include "hexa_sensors.h"
@@ -111,6 +113,7 @@ rosidl_runtime_c__String joint_names[kJoints];
 double joint_pos[kJoints];
 
 enum class Agent { kWaiting, kAvailable, kConnected, kDisconnected } agent = Agent::kWaiting;
+uint32_t sessions = 0;  // sessions created since boot
 
 void set_string(rosidl_runtime_c__String* s, const char* v) {
     s->data = const_cast<char*>(v);
@@ -286,12 +289,21 @@ void agent_step() {
             break;
         case Agent::kAvailable:
             agent = entities_create() ? Agent::kConnected : Agent::kWaiting;
+            if (agent == Agent::kConnected) ++sessions;
             if (agent == Agent::kWaiting) entities_destroy();
             break;
         case Agent::kConnected:
             if (now - last_check > 1000) {
                 last_check = now;
-                if (rmw_uros_ping_agent(100, 1) != RMW_RET_OK) {
+                // Serial answers a ping within a few ms, so one miss is a lost agent. Wi-Fi
+                // replies take 3-200 ms (median ~20): a single late one tore the session down
+                // 23 times in 2.5 min (agent log), each costing every entity. There a ping
+                // waits 50 ms, the loop's budget, and only 5 misses in a row (5 s) disconnect.
+                const bool wifi = link_cfg.kind == hexa_link::Kind::kWifi;
+                static int misses = 0;
+                misses = rmw_uros_ping_agent(wifi ? 50 : 100, 1) == RMW_RET_OK ? 0 : misses + 1;
+                if (misses >= (wifi ? 5 : 1)) {
+                    misses = 0;
                     agent = Agent::kDisconnected;
                     break;
                 }
@@ -326,9 +338,22 @@ void base_setup() {
 void base_loop() {
     static uint32_t next_tick = millis();
     static uint32_t frame = 0;
+    // Loop health on a Wi-Fi link (Serial is free there): the slowest loop and the ticks
+    // that ran more than one frame late, every 30 s.
+    static uint32_t loop_max_ms = 0, late_ticks = 0, last_report = 0, loop_t0 = millis();
+    const uint32_t t_start = millis();
+    loop_max_ms = max(loop_max_ms, t_start - loop_t0);
+    loop_t0 = t_start;
+    if (link_cfg.kind == hexa_link::Kind::kWifi && t_start - last_report > 30000) {
+        last_report = t_start;
+        Serial.printf("base sessions %u  loop max %u ms  late ticks %u\n", static_cast<unsigned>(sessions),
+                      static_cast<unsigned>(loop_max_ms), static_cast<unsigned>(late_ticks));
+        loop_max_ms = late_ticks = 0;
+    }
     agent_step();
     const uint32_t now = millis();
     if (static_cast<int32_t>(now - next_tick) >= 0) {
+        if (static_cast<int32_t>(now - next_tick) > static_cast<int32_t>(kTickS * 1000)) ++late_ticks;
         next_tick += static_cast<uint32_t>(kTickS * 1000);
         if (static_cast<int32_t>(now - next_tick) > 100) next_tick = now;  // fell behind: no burst
         robot_tick(now / 1000.0f);
@@ -369,7 +394,7 @@ void console_info() {
 }
 
 void console_i2c() {
-    Wire.begin(HEXA_I2C_SDA, HEXA_I2C_SCL);
+    board_io::begin();
     int found = 0;
     for (uint8_t a = 1; a < 127; ++a) {
         Wire.beginTransmission(a);
@@ -389,6 +414,21 @@ void console_command(String cmd) {
         hexa_link::print_status(Serial);
     } else if (cmd == "i2c") {
         console_i2c();
+    } else if (cmd.startsWith("servo ")) {
+        // One servo, for the bench: the robot on a stand, one joint at a time. Never while a
+        // gait drives the servos (real mode, not possible until the board is verified).
+        unsigned id = 0, us = 0, ms = 500;
+        const int got = sscanf(cmd.c_str() + 6, "%u %u %u", &id, &us, &ms);
+        if (!sim_mode) Serial.println("refused: the gait drives the servos in real mode");
+        else if (got < 2 || ms > 5000 || !board_io::servo(id, us, ms))
+            Serial.println("usage: servo <id 1-18> <us 500-2500> [ms <= 5000]");
+        else Serial.printf("servo %u -> %u us over %u ms\n", id, us, ms);
+    } else if (cmd == "bat") {
+        Serial.printf("battery adc %d mV  i2c %d mV\n", board_io::battery_adc_mv(), board_io::battery_i2c_mv());
+    } else if (cmd == "sonar") {
+        Serial.printf("sonar %d mm\n", board_io::sonar_mm());
+    } else if (cmd == "imu") {
+        Serial.printf("imu who_am_i %d (QMI8658: 5)\n", board_io::imu_who_am_i());
     } else if (cmd == "app base" || cmd == "app console") {
         prefs.putString("app", cmd.substring(4));
         Serial.printf("app = %s (after reboot)\n", cmd.substring(4).c_str());
@@ -405,7 +445,7 @@ void console_command(String cmd) {
     } else if (cmd == "reboot") {
         ESP.restart();
     } else if (cmd.length()) {
-        Serial.println("commands: info | link | i2c | app base|console | sim on|off | reboot");
+        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | bat | sonar | imu | app base|console | sim on|off | reboot");
     }
 }
 
@@ -464,6 +504,10 @@ void setup() {
 
 void loop() {
     hexa_link::loop();
-    if (console) console_loop();
-    else base_loop();
+    if (console) {
+        console_loop();
+    } else {
+        base_loop();
+        if (link_cfg.kind == hexa_link::Kind::kWifi) console_loop();  // Serial is free
+    }
 }

@@ -42,4 +42,29 @@ void SimServo::step(float dt, const SimServoParams& p) {
     pos_ += std::fmax(-max_step, std::fmin(max_step, err));
 }
 
+size_t servo_bus_frame(const BusServo* servos, int n, uint16_t time_ms, uint8_t* out, size_t cap) {
+    if (n < 1 || n > 21) return 0;
+    const size_t data_len = 4 + 3 * static_cast<size_t>(n);
+    const size_t len = 4 + data_len + 1;
+    if (len > cap) return 0;
+    out[0] = 0x55;
+    out[1] = 0x55;
+    out[2] = 0x01;  // function: PWM servo control
+    out[3] = static_cast<uint8_t>(data_len + 3);
+    out[4] = 0x01;  // command: set servos
+    out[5] = static_cast<uint8_t>(n);
+    out[6] = time_ms & 0xff;
+    out[7] = time_ms >> 8;
+    for (int i = 0; i < n; ++i) {
+        if (servos[i].us < kBusMinUs || servos[i].us > kBusMaxUs) return 0;
+        out[8 + 3 * i] = servos[i].id;
+        out[9 + 3 * i] = servos[i].us & 0xff;
+        out[10 + 3 * i] = servos[i].us >> 8;
+    }
+    unsigned sum = 0;
+    for (size_t i = 0; i + 1 < len; ++i) sum += out[i];
+    out[len - 1] = sum & 0xff;
+    return len;
+}
+
 }  // namespace hexa

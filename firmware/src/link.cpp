@@ -18,6 +18,7 @@ Config cfg;
 WiFiUDP udp;
 IPAddress agent_ip;
 bool ota_started = false;
+uint32_t tx_ok = 0, tx_fail = 0, rx_n = 0;  // UDP datagrams, for the status line
 void (*ota_start_cb)() = nullptr;
 void (*ota_error_cb)() = nullptr;
 
@@ -41,14 +42,23 @@ bool udp_close(uxrCustomTransport*) {
 }
 size_t udp_write(uxrCustomTransport*, const uint8_t* buf, size_t len, uint8_t*) {
     if (WiFi.status() != WL_CONNECTED) return 0;
-    if (!udp.beginPacket(agent_ip, cfg.port)) return 0;
+    if (!udp.beginPacket(agent_ip, cfg.port)) {
+        ++tx_fail;
+        return 0;
+    }
     const size_t sent = udp.write(buf, len);
-    return udp.endPacket() ? sent : 0;
+    if (!udp.endPacket()) {
+        ++tx_fail;
+        return 0;
+    }
+    ++tx_ok;
+    return sent;
 }
 size_t udp_read(uxrCustomTransport*, uint8_t* buf, size_t len, int timeout, uint8_t*) {
     const uint32_t t0 = millis();
     do {
         if (udp.parsePacket() > 0) {
+            ++rx_n;
             const int n = udp.read(buf, len);
             return n > 0 ? static_cast<size_t>(n) : 0;
         }
@@ -150,7 +160,8 @@ void print_status(Print& out) {
     const bool up = WiFi.status() == WL_CONNECTED;
     out.printf("link wifi ssid %s %s", cfg.ssid.c_str(), up ? "up" : "down");
     if (up) out.printf(" ip %s rssi %d ch %d", WiFi.localIP().toString().c_str(), WiFi.RSSI(), WiFi.channel());
-    out.printf("  agent %s:%u  ota %s  app %s  elf %s\n", cfg.agent.c_str(), cfg.port,
+    out.printf("  agent %s:%u  udp tx %u fail %u rx %u  ota %s  app %s  elf %s\n", cfg.agent.c_str(), cfg.port,
+               static_cast<unsigned>(tx_ok), static_cast<unsigned>(tx_fail), static_cast<unsigned>(rx_n),
                cfg.ota_pw.isEmpty() ? "off (no password)" : (ota_started ? "on :3232" : "waiting"),
                running_partition(), elf_sha());
 }

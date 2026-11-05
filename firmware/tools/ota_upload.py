@@ -30,6 +30,9 @@ def main():
     spec = importlib.util.spec_from_file_location("espota", espota_path)
     espota = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(espota)
+    # espota sets these from its own command line in main(); serve() reads them as globals.
+    espota.TIMEOUT = 10
+    espota.PROGRESS = False
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     local_port = random.randint(10000, 60000)
     rc = espota.serve(host, "0.0.0.0", 3232, local_port, password, False, image, espota.FLASH)
