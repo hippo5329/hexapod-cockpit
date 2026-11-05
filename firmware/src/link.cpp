@@ -11,6 +11,7 @@
 #include <rmw_microros/rmw_microros.h>
 
 #include "board_minihexa.h"
+#include "syslog.h"
 
 namespace hexa_link {
 namespace {
@@ -78,11 +79,16 @@ void ota_begin() {
         // the board half-way. It is armed again if the update fails; success reboots.
         disableLoopWDT();
         if (ota_start_cb) ota_start_cb();
-        Serial.println(ArduinoOTA.getCommand() == U_SPIFFS ? "ota: settings upload started" : "ota: update started");
+        hexa_log::log(hexa_log::kNotice, "%s",
+                      ArduinoOTA.getCommand() == U_SPIFFS ? "ota: settings upload started" : "ota: update started");
     });
-    ArduinoOTA.onEnd([]() { Serial.println("ota: update written, rebooting"); });
+    ArduinoOTA.onEnd([]() {
+        hexa_log::log(hexa_log::kNotice, "ota: %s written, rebooting",
+                      ArduinoOTA.getCommand() == U_SPIFFS ? "settings" : "update");
+        delay(100);  // the datagram out before the reboot
+    });
     ArduinoOTA.onError([](ota_error_t e) {
-        Serial.printf("ota: update failed (error %d)\n", static_cast<int>(e));
+        hexa_log::log(hexa_log::kErr, "ota: failed (error %d)", static_cast<int>(e));
         enableLoopWDT();
         if (ota_error_cb) ota_error_cb();
     });

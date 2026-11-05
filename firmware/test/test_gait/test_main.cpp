@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <cmath>
+#include <cstdio>
 
 #include "hexa_gait.h"
 #include "hexa_kin.h"
@@ -101,6 +102,42 @@ static void test_stop_settles_to_neutral() {
     }
 }
 
+// Every valid duty and period stands after a stop, within two cycles, on its own (the backstop
+// never fires): at 0.5 one tripod lands on the tick the other lifts, and it once stepped forever.
+static void test_stop_settles_for_every_duty_and_period() {
+    for (float duty : {0.5f, 0.55f, 0.6f, 0.7f, 0.8f}) {
+        for (float period : {0.5f, 0.8f, 1.0f, 1.5f, 2.0f, 3.0f}) {
+            GaitParams p = params;
+            p.period_s = period;
+            p.duty = duty;
+            TripodGait g;
+            g.init(&minihexa_geometry(), p);
+            float t = 0;
+            for (float s = 0; s < 2.3f * period; s += kDt, t += kDt) {
+                g.command({0.04f, 0.01f, 0.2f}, t);
+                g.step(kDt, t);
+            }
+            g.command({0, 0, 0}, t);
+            float waited = 0;
+            while (!g.standing() && waited < 2 * period + kDt) {
+                g.step(kDt, t);
+                t += kDt;
+                waited += kDt;
+            }
+            char msg[64];
+            snprintf(msg, sizeof msg, "duty %.2f period %.1f", duty, period);
+            TEST_ASSERT_TRUE_MESSAGE(g.standing(), msg);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(0, g.forced_stands(), msg);
+            for (int leg = 0; leg < kLegs; ++leg) {
+                const Vec3 n = neutral_foot(minihexa_geometry(), leg);
+                TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-3f, n.x, g.foot(leg).x, msg);
+                TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-3f, n.y, g.foot(leg).y, msg);
+                TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-6f, n.z, g.foot(leg).z, msg);
+            }
+        }
+    }
+}
+
 // A lost command stream (no zero ever sent) also ends in a stand.
 static void test_command_timeout_stands() {
     float t = 0;
@@ -146,6 +183,7 @@ int main() {
     RUN_TEST(test_feet_reachable_at_max_speed);
     RUN_TEST(test_stride_clamped);
     RUN_TEST(test_stop_settles_to_neutral);
+    RUN_TEST(test_stop_settles_for_every_duty_and_period);
     RUN_TEST(test_command_timeout_stands);
     RUN_TEST(test_params_only_while_standing);
     return UNITY_END();

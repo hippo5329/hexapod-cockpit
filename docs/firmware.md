@@ -26,6 +26,7 @@ pio test -d firmware -e native            # IK, gait, servo, sensor and AHRS tes
 | `src/board_io.*` | the board's buses: the servo controller (UART), battery monitor, ultrasonic and IMU (I2C) |
 | `src/qmi8658.*` | the QMI8658 driver, ported from linorobot2-cockpit |
 | `src/link.*` | the micro-ROS link (USB serial or Wi-Fi UDP) and OTA updates |
+| `src/syslog.*` | remote log lines over UDP syslog (linorobot2-cockpit's form and receiver) |
 | `tools/` | `make_nvs.py` (robot settings → NVS image), `ota_upload.py`, `push_settings.py` (settings over Wi-Fi) |
 | `test/` | Unity tests, `native` env |
 
@@ -68,6 +69,7 @@ firmware (`tools/make_nvs.py <settings file> <out.bin>`, flashed at 0x9000; OTA 
 | `trims` | 18 comma-separated servo trims in µs, by servo id: the vendor's "deviation" values |
 | `idle_s` | seconds without a command that moves before the robot lies down (Gait, below), 0-3600; default 30; `0`: never |
 | `low_bat_mv` | the final shutdown's battery floor (Shutdown, below) in mV, 5600-8000; default 6400 (3.2 V a cell); `0`: never |
+| `syslog_ip`, `syslog_port` | the UDP syslog sink (Syslog, below); port default 5140; none: no syslog |
 | `imu_level` | `roll,pitch` in degrees (each within ±10): how the IMU sits on its board, read with the body level (a level on the top plate) from the console's `imu`. Every IMU sample is turned into the body frame with it; none: the board is taken as level |
 
 The settings file carries the Wi-Fi key and the OTA password: keep it private (mode 0600) and out of any
@@ -77,7 +79,7 @@ firmware replaces it.
 **Over Wi-Fi, without USB**, `tools/push_settings.py <board IP> <settings file> <password file>` changes
 settings on a board that has OTA. The file has the same lines, only the keys to change; the others stay. An
 empty value (`trims=`) removes a key that has a default (`app`, `sim`, `port`, `trims`, `imu_level`,
-`idle_s`, `low_bat_mv`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
+`idle_s`, `low_bat_mv`, `syslog_ip`, `syslog_port`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
 line) and its MD5 check, into the unused `spiffs` partition. The board reboots, and the robot stands in its
 boot pose. Before anything reads NVS, the board checks every line (`lib/hexa_settings`, the rules of
 `make_nvs.py`). It writes the keys only if all pass, then erases the upload, so the upload is applied once.
@@ -86,6 +88,16 @@ robot that can only be reached over Wi-Fi: `link=serial`, removing `ssid`, `psk`
 `link=wifi` without a network and an agent. A change of `link`, `ssid` or `psk` is on trial: if the board has
 not joined the network 60 s after that boot, it puts the old values back and reboots. A new `ota_pw` holds
 from the next upload on.
+
+## Syslog
+
+On a Wi-Fi link the board sends its log lines to a UDP syslog sink (`syslog_ip`, `syslog_port`, default 5140), in
+linorobot2-cockpit's RFC 5424 form, so the cockpit's receiver (`web/backend/syslog_manager.py`) takes them as it
+takes a linorobot2 board's; on Serial too, where Serial is free. Lines from before the network is up (the boot's)
+wait in a backlog of 12 and go out when it is. A serial link sends none (no radio). The lines: `boot` (build,
+mode, reset reason, the settings upload's result, idle and battery floor), `agent` sessions up and lost, a
+`health` line every 30 s (battery, RSSI, sessions, slowest loop, late ticks, gait state, sonar, unreachable
+feet), `idle` down and up, `sonar` changes, `gait` faults, `shutdown`, `ota` and `settings` events.
 
 ## Wi-Fi and OTA
 
@@ -151,6 +163,11 @@ stands it up again over 3 s; commands are taken as zero until it is up, so a str
 there (a single message sent while it lies down is dropped). `info` shows the setting and whether it is up,
 lying down or between. Power off is the robot's switch.
 
+**Stopping.** A zero command (or a lost stream) finishes the stride: every foot steps back onto its neutral
+position and the gait stands. At a duty of 0.5 the last tripod lands on the very tick the other would lift, so
+that tick is the stand. A stop that has not settled two cycles after the command went to zero is put down at once
+(all feet on neutral) and logged as a `gait` fault; it is a backstop, and the tests never reach it.
+
 **Shutdown.** The final shutdown puts the robot down and the ESP32 into deep sleep: Wi-Fi, the CPUs and the
 link stop, and the board waits only for its BOOT button. It comes from `/shutdown` (`std_msgs/String`, data
 `shutdown`; any other data is ignored), from the console's `shutdown`, or from a flat pack: the battery
@@ -164,6 +181,11 @@ pose; the press that woke it does not select the console. `info` says `woken fro
 shows the floor. The power switch still cuts everything.
 
     ros2 topic pub --once /shutdown std_msgs/msg/String "{data: shutdown}"
+
+**Sonar lights.** In real mode the ultrasonic is read at 10 Hz with or without an agent, and its two lights show
+what it sees: blue clear, yellow under 0.40 m, red under 0.20 m (20 mm of hysteresis), each change logged. It is
+feedback only: stopping for an obstacle is the host's (nav2_collision_monitor or a test's guard). The sonar's cone
+is narrow (15°): a thin table leg beside its axis is not seen.
 
 ## AHRS
 

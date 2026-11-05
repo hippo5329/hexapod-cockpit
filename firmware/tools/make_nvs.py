@@ -17,6 +17,8 @@ the OTA password, so keep it private (mode 0600) and out of any public repositor
     idle_s   seconds without a command that moves before the robot lies down (default 30; 0: never)
     low_bat_mv  the final shutdown's battery floor in mV: under it for 30 s with the robot still,
              it lies down and the ESP32 sleeps (default 6400; 0: never; else 5600-8000)
+    syslog_ip, syslog_port  the UDP syslog sink (linorobot2-cockpit's receiver; port default 5140);
+             none: no syslog. Wi-Fi links only
     imu_level  roll,pitch of the IMU on its board, degrees (each within +-10), read with the body
              level (a level on the top plate) from the console's `imu`: every sample is turned
              into the body frame
@@ -33,7 +35,7 @@ import sys
 import tempfile
 
 NVS_SIZE = 0x5000
-STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level", "idle_s", "low_bat_mv"}
+STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level", "idle_s", "low_bat_mv", "syslog_ip", "syslog_port"}
 CHOICES = {"app": {"base", "console"}, "link": {"serial", "wifi"}, "sim": {"0", "1"}}
 
 
@@ -66,6 +68,13 @@ def load(path):
     if "low_bat_mv" in vals and not (vals["low_bat_mv"].isdigit() and
                                      (int(vals["low_bat_mv"]) == 0 or 5600 <= int(vals["low_bat_mv"]) <= 8000)):
         sys.exit("low_bat_mv must be 0 or 5600-8000 (mV)")
+    if "syslog_ip" in vals:
+        try:
+            ipaddress.IPv4Address(vals["syslog_ip"])
+        except ValueError:
+            sys.exit("syslog_ip must be an IPv4 address")
+    if "syslog_port" in vals and not (vals["syslog_port"].isdigit() and 0 < int(vals["syslog_port"]) < 65536):
+        sys.exit("syslog_port must be 1-65535")
     if "imu_level" in vals:
         f = [t.strip() for t in vals["imu_level"].split(",")]
         try:

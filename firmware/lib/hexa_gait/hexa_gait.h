@@ -48,6 +48,8 @@ public:
     const Vec3& foot(int leg) const { return foot_[leg]; }
     bool in_stance(int leg) const;
     bool standing() const { return standing_; }
+    // Stops that never settled and were put down by the backstop (step()): each one is a fault.
+    int forced_stands() const { return forced_stands_; }
 
     // The twist the stance feet are moving the body by this tick (zero while standing).
     // This is what gait odometry integrates.
@@ -67,6 +69,8 @@ private:
     float cmd_time_ = -1e9f;
     float phase_ = 0.0f;
     bool standing_ = true;
+    float idle_s_ = 0;      // stepping with a zero command, since
+    int forced_stands_ = 0;
     bool was_stance_[kLegs];
     Vec3 foot_[kLegs];
     Vec3 swing_from_[kLegs];

@@ -28,10 +28,10 @@ static void test_good_blob_gives_its_keys() {
     std::vector<Setting> s;
     std::string why;
     TEST_ASSERT_TRUE(parse("# robot settings\nimu_level=3.41,-3.86\n\nidle_s = 60\r\n"
-                           "trims=0,5,-10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,200\nsim=0\napp=base\nlow_bat_mv=6400\n"
+                           "trims=0,5,-10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,200\nsim=0\napp=base\nlow_bat_mv=6400\nsyslog_ip=10.72.1.1\nsyslog_port=5140\n"
                            "agent=10.72.1.1\nport=8888\nlink=wifi\nssid=net\npsk=12345678\nota_pw=x\n",
                            &s, &why));
-    TEST_ASSERT_EQUAL(12, s.size());
+    TEST_ASSERT_EQUAL(14, s.size());
     TEST_ASSERT_EQUAL_STRING("imu_level", s[0].key.c_str());
     TEST_ASSERT_EQUAL_STRING("3.41,-3.86", s[0].value.c_str());
     TEST_ASSERT_EQUAL_STRING("idle_s", s[1].key.c_str());
@@ -53,6 +53,8 @@ static void test_bad_values_refuse_the_whole_blob() {
     TEST_ASSERT_TRUE(refused("imu_level=1e1,0\n"));
     TEST_ASSERT_TRUE(refused("idle_s=3601\n"));
     TEST_ASSERT_TRUE(refused("idle_s=-1\n"));
+    TEST_ASSERT_TRUE(refused("syslog_ip=10.72.1\n"));
+    TEST_ASSERT_TRUE(refused("syslog_port=0\n"));
     TEST_ASSERT_TRUE(refused("low_bat_mv=5599\n"));
     TEST_ASSERT_TRUE(refused("low_bat_mv=8001\n"));
     TEST_ASSERT_TRUE(refused("low_bat_mv=6.4\n"));

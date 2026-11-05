@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "hexa_settings.h"
+#include "syslog.h"
 
 namespace hexa_settings {
 namespace {
@@ -93,7 +94,7 @@ void trial_loop(Preferences& prefs, bool network_up) {
     if (network_up) {
         for (const char* k : kTrialKeys) prefs.remove((String("prev_") + k).c_str());
         prefs.remove("wifi_trial");
-        Serial.println("settings: the new Wi-Fi settings joined; kept");
+        hexa_log::log(hexa_log::kNotice, "settings: the new Wi-Fi settings joined; kept");
         done = true;
     } else if (millis() > kTrialMs) {
         for (const char* k : kTrialKeys) {
@@ -103,6 +104,7 @@ void trial_loop(Preferences& prefs, bool network_up) {
             prefs.remove(prev.c_str());
         }
         prefs.remove("wifi_trial");
+        // No network: nothing reaches syslog; the line is for Serial.
         Serial.println("settings: no network in 60 s with the new Wi-Fi settings; the old ones put back, rebooting");
         delay(100);
         ESP.restart();

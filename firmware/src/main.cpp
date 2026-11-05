@@ -20,6 +20,7 @@
 #include <Arduino.h>
 #include <cmath>
 #include <Preferences.h>
+#include <WiFi.h>
 #include <Wire.h>
 #include <esp_chip_info.h>
 #include <driver/rtc_io.h>
@@ -62,6 +63,7 @@ static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 3, "libmicroros built with fewer su
 #include "hexa_world.h"
 #include "link.h"
 #include "settings.h"
+#include "syslog.h"
 
 using namespace hexa;
 
@@ -191,7 +193,8 @@ void shutdown_request(const char* why) {
     shutdown_why = why;
     shutdown_t0 = millis() / 1000.0f;
     robot.command({0, 0, 0}, shutdown_t0);  // the stride finishes, the gait stands, then it lies down
-    Serial.printf("shutdown (%s): lying down, then deep sleep; BOOT or EN wakes it\n", why);
+    hexa_log::log(hexa_log::kNotice, "shutdown (%s): lying down, then deep sleep; BOOT or EN wakes it (battery %d mV)",
+                  why, battery_mv);
 }
 
 // New gait parameters from gait_params, waiting for the gait to stand (gait_callback).
@@ -512,11 +515,29 @@ void publish_battery() {
     rcl_publish(&battery_pub, &battery_msg, nullptr);
 }
 
+// The real ultrasonic at 10 Hz, with or without an agent: the reading for /sonar and the
+// obstacle feedback on its own lights: blue clear, yellow under kNearM, red under kCloseM (20 mm
+// of hysteresis, written only on a change), each change in the log.
+constexpr float kNearM = 0.40f, kCloseM = 0.20f;
+int sonar_level = -1;  // 0 clear, 1 near, 2 close; -1 not set yet
+void read_sonar() {
+    const int mm = board_io::sonar_mm();
+    if (mm < 0) return;  // a bus error keeps the last reading
+    sonar_msg.range = sonar_clamped(mm / 1000.0f);
+    const float r = sonar_msg.range, h = sonar_level < 0 ? 0.0f : 0.02f;
+    int level = r < kCloseM + (sonar_level == 2 ? h : 0) ? 2 : r < kNearM + (sonar_level >= 1 ? h : 0) ? 1 : 0;
+    if (level == sonar_level) return;
+    static const uint8_t rgb[3][3] = {{0, 0, 255}, {255, 160, 0}, {255, 0, 0}};
+    if (!board_io::sonar_rgb(rgb[level][0], rgb[level][1], rgb[level][2])) return;  // try again next read
+    if (sonar_level >= 0)
+        hexa_log::log(level == 2 ? hexa_log::kWarning : hexa_log::kInfo, "sonar: %s at %.2f m",
+                      level == 2 ? "obstacle close" : level == 1 ? "obstacle near" : "clear", r);
+    sonar_level = level;
+}
+
 void publish_sonar() {
     stamp(&sonar_msg.header.stamp);
     if (real_sonar) {
-        const int mm = board_io::sonar_mm();
-        if (mm >= 0) sonar_msg.range = sonar_clamped(mm / 1000.0f);  // a bus error keeps the last reading
         rcl_publish(&sonar_pub, &sonar_msg, nullptr);
         return;
     }
@@ -536,7 +557,10 @@ void agent_step() {
             break;
         case Agent::kAvailable:
             agent = entities_create() ? Agent::kConnected : Agent::kWaiting;
-            if (agent == Agent::kConnected) ++sessions;
+            if (agent == Agent::kConnected) {
+                ++sessions;
+                hexa_log::log(hexa_log::kInfo, "agent: session %u up", static_cast<unsigned>(sessions));
+            }
             if (agent == Agent::kWaiting) entities_destroy();
             break;
         case Agent::kConnected:
@@ -563,6 +587,7 @@ void agent_step() {
             rclc_executor_spin_some(&executor, 0);
             break;
         case Agent::kDisconnected:
+            hexa_log::log(hexa_log::kWarning, "agent: session %u lost", static_cast<unsigned>(sessions));
             entities_destroy();
             agent = Agent::kWaiting;
             break;
@@ -574,8 +599,9 @@ void console_info();
 // The ESP32's lowest state that BOOT can end: deep sleep, the RTC domain kept for the
 // BOOT pin's wake (GPIO0, pressed = low). Wi-Fi and the CPUs are off; a wake is a boot.
 void deep_sleep() {
-    Serial.println("shutdown: deep sleep now; press BOOT or EN to wake");
+    hexa_log::log(hexa_log::kNotice, "shutdown: deep sleep now; press BOOT or EN to wake");
     Serial.flush();
+    delay(100);  // the datagram out before the radio stops
     board_io::before_deep_sleep();
     pinMode(HEXA_LED_PIN, OUTPUT);
     digitalWrite(HEXA_LED_PIN, LOW);
@@ -607,8 +633,13 @@ void base_loop() {
     loop_t0 = t_start;
     if (link_cfg.kind == hexa_link::Kind::kWifi && t_start - last_report > 30000) {
         last_report = t_start;
-        Serial.printf("base sessions %u  loop max %u ms  late ticks %u\n", static_cast<unsigned>(sessions),
-                      static_cast<unsigned>(loop_max_ms), static_cast<unsigned>(late_ticks));
+        hexa_log::log(hexa_log::kInfo,
+                      "health: battery %d mV  rssi %d dBm  sessions %u  loop max %u ms  late ticks %u  gait %s  "
+                      "sonar %.2f m  unreachable %u",
+                      battery_mv, static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(sessions),
+                      static_cast<unsigned>(loop_max_ms), static_cast<unsigned>(late_ticks),
+                      robot.resting() ? "lying" : robot.rest_level() > 0 ? "between" : robot.gait().standing() ? "standing" : "walking",
+                      sonar_msg.range, static_cast<unsigned>(unreachable));
         loop_max_ms = late_ticks = 0;
     }
     agent_step();
@@ -619,6 +650,18 @@ void base_loop() {
         if (static_cast<int32_t>(now - next_tick) > 100) next_tick = now;  // fell behind: no burst
         robot_tick(now / 1000.0f);
         ++frame;
+        if (real_sonar && frame % 5 == 0) read_sonar();
+        // Idle and the gait's backstop, in the log.
+        static bool was_resting = false;
+        static int forced = 0;
+        if (robot.resting() != was_resting) {
+            was_resting = robot.resting();
+            hexa_log::log(hexa_log::kInfo, "idle: %s", was_resting ? "lying down" : "standing up (a command moved it)");
+        }
+        if (robot.gait().forced_stands() != forced) {
+            forced = robot.gait().forced_stands();
+            hexa_log::log(hexa_log::kErr, "gait: a stop did not settle in two cycles; feet put down (%d so far)", forced);
+        }
         if (frame % 50 == 25) {
             battery_mv = board_io::battery_i2c_mv();
             if (low_battery.update(battery_mv, robot.gait().standing())) shutdown_request("battery low");
@@ -636,7 +679,7 @@ void base_loop() {
             if (frame % 2 == 0) publish_state();  // 25 Hz: joint_states 452 B, odom 732 B
             if (frame % 50 == 25) publish_battery();  // 1 Hz, ~100 B
             if (real_imu) publish_imu();                   // 50 Hz: the real QMI8658
-            if (real_sonar && frame % 5 == 0) publish_sonar();  // 10 Hz: the real ultrasonic
+            if (real_sonar && frame % 5 == 0) publish_sonar();  // 10 Hz: the real ultrasonic (read_sonar)
             if (sim_mode) {
                 publish_imu();                              // 50 Hz, 332 B
                 if (frame % 5 == 0) publish_sonar();        // 10 Hz, 56 B: an HC-SR04's pace
@@ -677,6 +720,7 @@ void console_info() {
     Serial.printf("shutdown when the battery stays under %d mV for 30 s (0: never)  battery %d mV\n",
                   low_battery.floor_mv(), board_io::battery_i2c_mv());
     Serial.printf("settings over Wi-Fi at boot: %s\n", hexa_settings::last_result());
+    Serial.printf("syslog %s\n", hexa_log::sink());
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
     hexa_link::print_status(Serial);
 }
@@ -873,12 +917,21 @@ void setup() {
         for (int i = 0; i < 500 && digitalRead(HEXA_BOOT_PIN) == LOW; ++i) delay(10);
     }
     console = boot_button_pressed(2000) || prefs.getString("app", "base") == "console";
+    hexa_log::begin(prefs, link_cfg.kind == hexa_link::Kind::kWifi, link_cfg.kind == hexa_link::Kind::kWifi || console);
+    const esp_reset_reason_t why = esp_reset_reason();
+    hexa_log::log(hexa_log::kNotice, "boot: %s, %s %s, app %s, sim %s, reset %s, settings %s, idle %u s, low_bat %d mV",
+                  hexa_link::elf_sha(), __DATE__, __TIME__, console ? "console" : "base", sim_mode ? "on" : "off",
+                  why == ESP_RST_POWERON ? "power-on/EN" : why == ESP_RST_DEEPSLEEP ? "deep-sleep wake"
+                  : why == ESP_RST_TASK_WDT ? "loop watchdog" : why == ESP_RST_PANIC ? "panic"
+                  : why == ESP_RST_SW ? "software" : "other",
+                  hexa_settings::last_result(), static_cast<unsigned>(idle_s), low_battery.floor_mv());
     if (console) console_setup();
     else base_setup();
 }
 
 void loop() {
     hexa_link::loop();
+    hexa_log::loop(hexa_link::network_up());
     hexa_settings::trial_loop(prefs, hexa_link::network_up());
     if (console) {
         console_loop();

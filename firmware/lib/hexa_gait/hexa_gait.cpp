@@ -93,10 +93,44 @@ void TripodGait::step(float dt, float now_s) {
                         std::fabs(cmd_.wz) > kZeroCmd;
     if (!moving && settled()) {
         standing_ = true;
+        idle_s_ = 0;
         return;
     }
+    const float next = frac(phase_ + dt / p_.period_s);
+    if (!moving) {
+        // At a duty of 0.5 one tripod lifts on the very tick the other lands, so the check above
+        // never sees all six feet down at once and the gait would step in place forever (it did,
+        // on the robot, at 0.8 s / 0.5). Look at the tick ahead instead: the feet landing on it
+        // and the feet about to lift (still down) all on neutral is a stand.
+        bool down = true;
+        for (int i = 0; i < kLegs && down; ++i) {
+            const bool stance_next = frac(next + kOffset[i]) < p_.duty;
+            if (!stance_next && !was_stance_[i]) down = false;  // mid-swing
+            const Vec3& p = stance_next && !was_stance_[i] ? landing_[i] : foot_[i];
+            const Vec3 n = neutral_foot(*g_, i);
+            down = down && std::fabs(p.x - n.x) <= kSettleEps && std::fabs(p.y - n.y) <= kSettleEps &&
+                   (was_stance_[i] || stance_next);
+        }
+        idle_s_ += dt;
+        // The backstop: still stepping two cycles after the command went to zero (no case left
+        // known): put every foot down on neutral and stand. forced_stands() counts it.
+        if (down || idle_s_ > 2 * p_.period_s) {
+            if (!down) ++forced_stands_;
+            for (int i = 0; i < kLegs; ++i) {
+                foot_[i] = neutral_foot(*g_, i);
+                landing_[i] = swing_from_[i] = foot_[i];
+            }
+            phase_ = next;
+            for (int i = 0; i < kLegs; ++i) was_stance_[i] = true;
+            standing_ = true;
+            idle_s_ = 0;
+            return;
+        }
+    } else {
+        idle_s_ = 0;
+    }
     standing_ = false;
-    phase_ = frac(phase_ + dt / p_.period_s);
+    phase_ = next;
 
     const float t_stance = p_.duty * p_.period_s;
     for (int i = 0; i < kLegs; ++i) {

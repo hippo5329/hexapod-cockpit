@@ -80,6 +80,19 @@ int sonar_mm() {
     return i2c_read(HEXA_SONAR_ADDR, 0, b, 2) ? (b[0] | b[1] << 8) : -1;
 }
 
+bool sonar_rgb(uint8_t r, uint8_t g, uint8_t b) {
+    begin();
+    Wire.beginTransmission(HEXA_SONAR_ADDR);
+    Wire.write(2);  // light mode
+    Wire.write(0);  // solid
+    if (Wire.endTransmission() != 0) return false;
+    Wire.beginTransmission(HEXA_SONAR_ADDR);
+    Wire.write(3);  // both lights' colours, r g b each
+    const uint8_t c[6] = {r, g, b, r, g, b};
+    Wire.write(c, sizeof c);
+    return Wire.endTransmission() == 0;
+}
+
 namespace {
 Qmi8658 qmi;
 bool imu_ok = false;
