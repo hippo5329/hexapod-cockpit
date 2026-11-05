@@ -12,7 +12,7 @@ Stamps are the host's receive time less latency_s (the board has no ROS clock). 
 retried every reconnect_s; the rate, bandwidth and reconnects are logged every 10 s.
 
 Parameters:
-  url              http://10.72.1.21:81/stream
+  url              the board's stream, http://<camera ip>:81/stream (required)
   frame_id         camera_optical_frame
   camera_info_file a camera_calibration YAML (empty: nominal)
   hfov_deg         66.0, the nominal horizontal field of view for the nominal intrinsics
@@ -107,7 +107,9 @@ def frames(stream):
 class CameraBridge(Node):
     def __init__(self):
         super().__init__("camera_bridge")
-        self.url = self.declare_parameter("url", "http://10.72.1.21:81/stream").value
+        self.url = self.declare_parameter("url", "").value
+        if not self.url:
+            raise SystemExit("camera_bridge: set url (http://<camera ip>:81/stream)")
         self.frame_id = self.declare_parameter("frame_id", "camera_optical_frame").value
         info_file = self.declare_parameter("camera_info_file", "").value
         self.hfov = float(self.declare_parameter("hfov_deg", 66.0).value)

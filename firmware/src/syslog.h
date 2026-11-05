@@ -21,7 +21,7 @@ void begin(Preferences& prefs, bool wifi_link, bool serial_free, const char* hos
 void log(Severity sev, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 // Every loop: the backlog out once the network is up.
 void loop(bool network_up);
-// "10.72.1.1:5140", or "off" (no sink, or a serial link), for info.
+// "192.168.4.1:5140", or "off" (no sink, or a serial link), for info.
 const char* sink();
 
 }  // namespace hexa_log
