@@ -19,12 +19,21 @@ struct ServoCal {
     float zero_rad = 0.0f;     // joint angle at centre_us
 };
 
-// Pulse width per radian for a 180-degree, 500-2500 us servo. HPD-0127: UNMEASURED.
-constexpr float kUsPerRad = 2000.0f / 3.14159265f;
+// Pulse width per radian: the miniHexa's servos turn 280 degrees over 500-2500 us
+// (the vendor's 7.143 us per degree).
+constexpr float kUsPerRad = 2000.0f / (280.0f * 3.14159265f / 180.0f);
 
-// Default calibration of a joint: coxa and femur centred at 0, tibia centred at -90
-// degrees (foot straight down with the femur horizontal), all dir +1, no trim.
-ServoCal default_cal(int joint);
+// Calibration of joint k (leg * 3 + joint, kin's leg order), from the vendor's servo
+// convention: every joint at 1500 us sits at its zero, coxa and femur at 0, tibia at -90
+// degrees from the femur. A longer pulse turns a coxa counter-clockwise seen from above
+// on every leg; the femur and tibia servos of the left legs are mounted mirrored, so a
+// longer pulse lowers a right femur and raises a left one (and the opposite for the
+// tibia). The femur is held to 857-2143 us (+-90 degrees), as the vendor does. No trim.
+ServoCal default_cal(int k);
+
+// The servo controller's id of joint k: the vendor numbers legs 1-3 right rear, middle,
+// front and 4-6 left front, middle, rear; id = (vendor leg - 1) * 3 + joint + 1.
+uint8_t servo_id(int k);
 
 // Pulse for a joint angle, clamped to [min_us, max_us]. *clamped (optional) reports it.
 int angle_to_us(const ServoCal& c, float rad, bool* clamped = nullptr);

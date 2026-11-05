@@ -73,6 +73,49 @@ static void test_neutral_pose_shape() {
     TEST_ASSERT_TRUE(a.tibia < 0.0f && a.tibia > -3.1416f);
 }
 
+// The vendor's servo ids: legs 1-3 right rear, middle, front; 4-6 left front, middle, rear.
+static void test_servo_ids() {
+    TEST_ASSERT_EQUAL(7, servo_id(0));    // rf coxa: vendor leg 3
+    TEST_ASSERT_EQUAL(5, servo_id(4));    // rm femur: leg 2
+    TEST_ASSERT_EQUAL(1, servo_id(6));    // rr coxa: leg 1
+    TEST_ASSERT_EQUAL(18, servo_id(11));  // lr tibia: leg 6
+    TEST_ASSERT_EQUAL(13, servo_id(12));  // lm coxa: leg 5
+    TEST_ASSERT_EQUAL(12, servo_id(17));  // lf tibia: leg 4
+    bool seen[19] = {};
+    for (int k = 0; k < kJoints; ++k) {
+        TEST_ASSERT_FALSE(seen[servo_id(k)]);
+        seen[servo_id(k)] = true;
+    }
+}
+
+// The neutral stance through the calibration gives the vendor's standing pulses: coxa
+// 1500, femur 1409 / tibia 1357 on the right legs, 1590 / 1642 on the left (within 1 us).
+static void test_neutral_stance_is_the_vendors_stand() {
+    const Geometry& g = minihexa_geometry();
+    for (int leg = 0; leg < kLegs; ++leg) {
+        LegAngles a;
+        TEST_ASSERT_TRUE(leg_ik(g, leg, neutral_foot(g, leg), &a));
+        const bool left = leg >= 3;
+        TEST_ASSERT_INT_WITHIN(1, 1500, angle_to_us(default_cal(leg * 3), a.coxa));
+        TEST_ASSERT_INT_WITHIN(1, left ? 1590 : 1409, angle_to_us(default_cal(leg * 3 + 1), a.femur));
+        TEST_ASSERT_INT_WITHIN(1, left ? 1642 : 1357, angle_to_us(default_cal(leg * 3 + 2), a.tibia));
+    }
+}
+
+// Directions: a longer coxa pulse turns the leg counter-clockwise seen from above on every
+// leg; a longer femur pulse lowers a right femur and raises a left one.
+static void test_servo_directions() {
+    for (int leg = 0; leg < kLegs; ++leg) {
+        const bool left = leg >= 3;
+        TEST_ASSERT_TRUE(angle_to_us(default_cal(leg * 3), 0.1f) > 1500);
+        TEST_ASSERT_EQUAL(!left, angle_to_us(default_cal(leg * 3 + 1), 0.1f) < 1500);
+        TEST_ASSERT_EQUAL(!left, angle_to_us(default_cal(leg * 3 + 2), -1.47f) > 1500);
+    }
+    bool clamped = false;
+    TEST_ASSERT_EQUAL(857, angle_to_us(default_cal(1), 2.0f, &clamped));  // the vendor's femur clamp
+    TEST_ASSERT_TRUE(clamped);
+}
+
 static void test_servo_bus_frame() {
     // One servo, id 1 at 1500 us over 500 ms, worked by hand from the frame layout.
     const hexa::BusServo one{1, 1500};
@@ -112,5 +155,8 @@ int main() {
     RUN_TEST(test_neutral_pose_shape);
     RUN_TEST(test_servo_mapping);
     RUN_TEST(test_servo_bus_frame);
+    RUN_TEST(test_servo_ids);
+    RUN_TEST(test_neutral_stance_is_the_vendors_stand);
+    RUN_TEST(test_servo_directions);
     return UNITY_END();
 }

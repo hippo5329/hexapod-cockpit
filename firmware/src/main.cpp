@@ -15,6 +15,7 @@
 // `app` says. Sim mode (NVS `sim`, default on) drives simulated servos; real mode is
 // refused until board_minihexa.h is verified.
 #include <Arduino.h>
+#include <cmath>
 #include <Preferences.h>
 #include <Wire.h>
 #include <esp_chip_info.h>
@@ -54,9 +55,9 @@ hexa_link::Config link_cfg;
 // ---------------------------------------------------------------- robot model
 // One model for both modes (hexa_world): gait, IK and pulses. In sim mode its simulated
 // servos, true pose, IMU and range are what the board reports. In real mode the pulses
-// go to the servos (none until the board is identified) and /joint_states carries the
-// COMMANDED angles, since a PWM servo reports nothing back; no sensor is published until
-// its bus and pins are read off the board. The AHRS fuses whichever IMU samples there
+// go to the servos, every tick in one frame to the servo controller, and /joint_states
+// carries the COMMANDED angles, since a PWM servo reports nothing back; no sensor is
+// published until its driver reads the real part (none yet: never a simulated one). The AHRS fuses whichever IMU samples there
 // are, simulated or (later) the real QMI8658A's.
 const float kTickS = 0.02f;  // 50 Hz servo frame
 SimRobot robot;
@@ -68,8 +69,43 @@ Ahrs ahrs;
 SimRange sim_sonar;
 Wall room[kRoomWalls];
 
+// Per-servo trims (NVS "trims": 18 comma-separated us, by servo id), the vendor's
+// "deviation" values read off this robot before our firmware replaced the vendor's.
+int16_t trims[kJoints] = {};
+
+// One integer field, optional sign, digits only.
+bool parse_int(String f, long* out) {
+    f.trim();
+    if (f.isEmpty()) return false;
+    for (unsigned i = (f[0] == '-' || f[0] == '+') ? 1 : 0; i < f.length(); ++i)
+        if (!isdigit(static_cast<unsigned char>(f[i]))) return false;
+    if (f.length() == 1 && !isdigit(static_cast<unsigned char>(f[0]))) return false;
+    *out = f.toInt();
+    return true;
+}
+
+// 18 comma-separated trims, each within +-200 us; out untouched unless all are good.
+bool parse_trims(const String& csv, int16_t* out) {
+    int16_t v[kJoints];
+    int n = 0, from = 0;
+    for (;;) {
+        const int comma = csv.indexOf(',', from);
+        long t = 0;
+        if (n == kJoints || !parse_int(csv.substring(from, comma < 0 ? csv.length() : comma), &t) || t < -200 ||
+            t > 200)
+            return false;
+        v[n++] = static_cast<int16_t>(t);
+        if (comma < 0) break;
+        from = comma + 1;
+    }
+    if (n != kJoints) return false;
+    for (int i = 0; i < kJoints; ++i) out[i] = v[i];
+    return true;
+}
+
 void robot_init() {
     robot.init();  // slip 0.05, as the host simulator
+    robot.set_trims(trims);
     sim_imu.init();
     gyro_bias.init();
     ahrs.init();
@@ -88,7 +124,21 @@ void robot_tick(float now_s) {
         ahrs.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, imu_sample.ax, imu_sample.ay, imu_sample.az,
                     kTickS);
     }
-    // Real output: robot.pulse_us(k) to each servo, once the board is identified.
+    if (!sim_mode) {
+        // Every tick the 18 pulses in one frame, each to be reached in one tick. The first
+        // frame after boot takes the legs from wherever they hang to the stand over 1 s,
+        // and nothing else is sent until it is done (a later frame would cut it short).
+        static uint32_t hold_until = 0;
+        static bool first = true;
+        if (static_cast<int32_t>(millis() - hold_until) < 0) return;
+        BusServo s[kJoints];
+        for (int k = 0; k < kJoints; ++k) s[k] = {servo_id(k), static_cast<uint16_t>(robot.pulse_us(k))};
+        const uint16_t ms = first ? 1000 : static_cast<uint16_t>(kTickS * 1000);
+        if (board_io::servos(s, kJoints, ms) && first) {
+            first = false;
+            hold_until = millis() + ms;
+        }
+    }
 }
 
 float joint_angle(int k) { return sim_mode ? robot.joint_angle(k) : robot.commanded(k); }
@@ -423,6 +473,43 @@ void console_command(String cmd) {
         else if (got < 2 || ms > 5000 || !board_io::servo(id, us, ms))
             Serial.println("usage: servo <id 1-18> <us 500-2500> [ms <= 5000]");
         else Serial.printf("servo %u -> %u us over %u ms\n", id, us, ms);
+    } else if (cmd.startsWith("foot ")) {
+        // One leg's foot moved by (dx, dy, dz) mm from its standing position (body frame:
+        // x forward, y left, z up), through the gait's IK and the servo calibration: the
+        // bench check of each leg's mapping, on a stand, in sim mode only.
+        int leg = -1, ms = 600;
+        float d[3] = {0, 0, 0};
+        const int got = sscanf(cmd.c_str() + 5, "%d %f %f %f %d", &leg, &d[0], &d[1], &d[2], &ms);
+        const Geometry& g = minihexa_geometry();
+        Vec3 f{};
+        LegAngles a{};
+        if (!sim_mode) {
+            Serial.println("refused: the gait drives the servos in real mode");
+        } else if (got < 4 || leg < 0 || leg >= kLegs || ms < 100 || ms > 5000 ||
+                   std::fabs(d[0]) > 40 || std::fabs(d[1]) > 40 || std::fabs(d[2]) > 40) {
+            Serial.println("usage: foot <leg 0-5: rf rm rr lr lm lf> <dx> <dy> <dz mm, |d| <= 40> [ms 100-5000]");
+        } else if (f = neutral_foot(g, leg), f.x += d[0] / 1000, f.y += d[1] / 1000, f.z += d[2] / 1000,
+                   !leg_ik(g, leg, f, &a)) {
+            Serial.println("foot: out of reach");
+        } else {
+            const float ang[3] = {a.coxa, a.femur, a.tibia};
+            BusServo s[3];
+            bool clamped = false;
+            for (int j = 0; j < 3; ++j) {
+                ServoCal c = default_cal(leg * 3 + j);
+                c.trim_us = trims[servo_id(leg * 3 + j) - 1];
+                bool cl = false;
+                s[j] = {servo_id(leg * 3 + j), static_cast<uint16_t>(angle_to_us(c, ang[j], &cl))};
+                clamped |= cl;
+            }
+            board_io::servos(s, 3, static_cast<uint16_t>(ms));
+            Serial.printf("foot %s -> ids %u %u %u = %u %u %u us%s\n", kLegNames[leg], s[0].id, s[1].id, s[2].id,
+                          s[0].us, s[1].us, s[2].us, clamped ? " (clamped)" : "");
+        }
+    } else if (cmd == "trims") {
+        Serial.print("trims (us, servo id 1-18):");
+        for (int i = 0; i < kJoints; ++i) Serial.printf(" %d", trims[i]);
+        Serial.println();
     } else if (cmd == "bat") {
         Serial.printf("battery adc %d mV  i2c %d mV\n", board_io::battery_adc_mv(), board_io::battery_i2c_mv());
     } else if (cmd == "sonar") {
@@ -445,7 +532,7 @@ void console_command(String cmd) {
     } else if (cmd == "reboot") {
         ESP.restart();
     } else if (cmd.length()) {
-        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | bat | sonar | imu | app base|console | sim on|off | reboot");
+        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | foot <leg> <dx> <dy> <dz> [ms] | trims | bat | sonar | imu | app base|console | sim on|off | reboot");
     }
 }
 
@@ -493,6 +580,8 @@ void setup() {
     Serial.begin(HEXA_SERIAL_BAUD);
     prefs.begin("hexa", false);
     sim_mode = prefs.getBool("sim", true) || !HEXA_BOARD_VERIFIED;
+    const String trims_csv = prefs.getString("trims", "");
+    if (!trims_csv.isEmpty() && !parse_trims(trims_csv, trims)) Serial.println("trims: NVS value refused, none used");
     link_cfg = hexa_link::load(prefs);
     hexa_link::begin(link_cfg);
     // The loop stops for an update's length; the gait is told to stand first.

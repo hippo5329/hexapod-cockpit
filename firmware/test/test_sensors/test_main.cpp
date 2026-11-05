@@ -148,6 +148,22 @@ static void test_range_follows_the_walk() {
     TEST_ASSERT_FLOAT_WITHIN(0.003f + 0.005f * expect + 2e-3f, expect, sonar.measure(r.truth(), room, kRoomWalls));
 }
 
+// Trims (by servo id) go into every pulse; the simulated servos read pulses through the
+// same calibration, so the model stays where it was.
+static void test_trims_reach_the_pulses_not_the_model() {
+    SimRobot r;
+    TEST_ASSERT_TRUE(r.init());
+    const int before = r.pulse_us(0);  // rf coxa = servo id 7
+    const float angle = r.joint_angle(0);
+    int16_t t[kJoints] = {};
+    t[6] = 30;
+    r.set_trims(t);
+    TEST_ASSERT_EQUAL(before + 30, r.pulse_us(0));
+    for (int i = 0; i < 50; ++i) r.step(0.02f, i * 0.02f);
+    TEST_ASSERT_EQUAL(before + 30, r.pulse_us(0));
+    TEST_ASSERT_FLOAT_WITHIN(0.003f, angle, r.joint_angle(0));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_still_imu_noise_tilt_and_bias);
@@ -155,5 +171,6 @@ int main() {
     RUN_TEST(test_walk_accel_is_bounded);
     RUN_TEST(test_range_sees_the_room);
     RUN_TEST(test_range_follows_the_walk);
+    RUN_TEST(test_trims_reach_the_pulses_not_the_model);
     return UNITY_END();
 }

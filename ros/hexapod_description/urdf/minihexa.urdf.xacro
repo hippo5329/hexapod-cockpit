@@ -9,18 +9,19 @@
     <leg>_tibia revolute about -y (0 = in line with the femur, negative folds down), femur length out
     <leg>_foot  fixed, tibia length out
 
-  Every length is a PLACEHOLDER until measured on the robot (docs/hardware-minihexa.md,
-  open question 6); change it here and in hexa_kin.cpp together, the test fails otherwise.
+  Lengths, hip positions and mount directions are the vendor's design figures
+  (docs/hardware-minihexa.md); change them here and in hexa_kin.cpp together, the test
+  fails otherwise.
 -->
 <robot name="minihexa" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <xacro:property name="coxa_len" value="0.030"/>
-  <xacro:property name="femur_len" value="0.050"/>
-  <xacro:property name="tibia_len" value="0.075"/>
-  <xacro:property name="hip_x" value="0.060"/>
-  <xacro:property name="hip_y_corner" value="0.040"/>
-  <xacro:property name="hip_y_mid" value="0.055"/>
-  <xacro:property name="stand_z" value="-0.060"/>
+  <xacro:property name="coxa_len" value="0.0285"/>
+  <xacro:property name="femur_len" value="0.052"/>
+  <xacro:property name="tibia_len" value="0.072"/>
+  <xacro:property name="hip_x" value="0.0565"/>
+  <xacro:property name="hip_y_corner" value="0.0315"/>
+  <xacro:property name="hip_y_mid" value="0.0434"/>
+  <xacro:property name="stand_z" value="-0.0600"/>
   <xacro:property name="link_r" value="0.006"/>
 
   <material name="body"><color rgba="0.20 0.22 0.25 1"/></material>
@@ -39,11 +40,11 @@
 
   <link name="base_link">
     <visual>
-      <geometry><box size="0.150 0.120 0.025"/></geometry>
+      <geometry><box size="0.140 0.087 0.025"/></geometry>
       <material name="body"/>
     </visual>
     <collision>
-      <geometry><box size="0.150 0.120 0.025"/></geometry>
+      <geometry><box size="0.140 0.087 0.025"/></geometry>
     </collision>
     <inertial>
       <mass value="0.25"/>
@@ -91,10 +92,13 @@
     </link>
   </xacro:macro>
 
-  <!-- Servo range: 500-2500 us = 180 degrees, centred at coxa 0, femur 0, tibia -90 deg
-       (hexa_servo default_cal). Effort and velocity: listed HPD-0127 1.8 kg.cm, 0.05 s/60 deg. -->
-  <xacro:macro name="leg" params="name x y">
-    <xacro:property name="yaw" value="${atan2(y, x)}"/>
+  <!-- Joint ranges: the servos turn 280 degrees (500-2500 us) centred at coxa 0, femur 0,
+       tibia -90 deg (hexa_servo default_cal); the femur is held to +-90 as the vendor does, the
+       coxa to +-90 and the tibia to a fold between in line and flat back (the legs meet before
+       the servos' ends). Effort and velocity: listed HPD-0127 1.8 kg.cm, 0.05 s/60 deg.
+       yaw_deg: the direction the leg points at coxa 0 (corner legs 45 degrees, middle legs out). -->
+  <xacro:macro name="leg" params="name x y yaw_deg">
+    <xacro:property name="yaw" value="${yaw_deg*pi/180}"/>
     <joint name="${name}_coxa" type="revolute">
       <parent link="base_link"/>
       <child link="${name}_coxa_link"/>
@@ -136,11 +140,11 @@
   </xacro:macro>
 
   <!-- Order and positions as hexa_kin.cpp: rf rm rr lr lm lf. -->
-  <xacro:leg name="rf" x="${hip_x}" y="${-hip_y_corner}"/>
-  <xacro:leg name="rm" x="0.0" y="${-hip_y_mid}"/>
-  <xacro:leg name="rr" x="${-hip_x}" y="${-hip_y_corner}"/>
-  <xacro:leg name="lr" x="${-hip_x}" y="${hip_y_corner}"/>
-  <xacro:leg name="lm" x="0.0" y="${hip_y_mid}"/>
-  <xacro:leg name="lf" x="${hip_x}" y="${hip_y_corner}"/>
+  <xacro:leg name="rf" x="${hip_x}" y="${-hip_y_corner}" yaw_deg="-45"/>
+  <xacro:leg name="rm" x="0.0" y="${-hip_y_mid}" yaw_deg="-90"/>
+  <xacro:leg name="rr" x="${-hip_x}" y="${-hip_y_corner}" yaw_deg="-135"/>
+  <xacro:leg name="lr" x="${-hip_x}" y="${hip_y_corner}" yaw_deg="135"/>
+  <xacro:leg name="lm" x="0.0" y="${hip_y_mid}" yaw_deg="90"/>
+  <xacro:leg name="lf" x="${hip_x}" y="${hip_y_corner}" yaw_deg="45"/>
 
 </robot>

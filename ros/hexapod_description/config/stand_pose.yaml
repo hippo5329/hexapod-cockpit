@@ -5,20 +5,20 @@ joint_state_publisher:
   ros__parameters:
     zeros:
       rf_coxa: 0.0
-      rf_femur: 0.297447
-      rf_tibia: -1.772154
+      rf_femur: 0.221394
+      rf_tibia: -1.919350
       rm_coxa: 0.0
-      rm_femur: 0.297447
-      rm_tibia: -1.772154
+      rm_femur: 0.221394
+      rm_tibia: -1.919350
       rr_coxa: 0.0
-      rr_femur: 0.297447
-      rr_tibia: -1.772154
+      rr_femur: 0.221394
+      rr_tibia: -1.919350
       lr_coxa: 0.0
-      lr_femur: 0.297447
-      lr_tibia: -1.772154
+      lr_femur: 0.221394
+      lr_tibia: -1.919350
       lm_coxa: 0.0
-      lm_femur: 0.297447
-      lm_tibia: -1.772154
+      lm_femur: 0.221394
+      lm_tibia: -1.919350
       lf_coxa: 0.0
-      lf_femur: 0.297447
-      lf_tibia: -1.772154
+      lf_femur: 0.221394
+      lf_tibia: -1.919350

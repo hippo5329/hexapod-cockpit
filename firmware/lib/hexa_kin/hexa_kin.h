@@ -39,8 +39,7 @@ struct Geometry {
     float neutral_reach;       // horizontal hip-to-foot distance of the neutral stance
 };
 
-// The miniHexa's geometry. PLACEHOLDERS until measured on the robot (open question 6
-// in docs/hardware-minihexa.md): only the 240 x 234 mm outline is from the listing.
+// The miniHexa's geometry: the vendor's design figures (docs/hardware-minihexa.md).
 const Geometry& minihexa_geometry();
 
 // Neutral (standing) foot position of a leg, body frame.

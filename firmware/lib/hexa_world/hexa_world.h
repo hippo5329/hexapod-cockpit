@@ -53,6 +53,11 @@ public:
     // stance is unreachable (a geometry fault).
     bool init(double slip = 0.05, const GaitParams& gp = GaitParams(), const SimServoParams& sp = SimServoParams());
 
+    // Per-servo trims (us, indexed by servo id - 1: the vendor's "deviation"), added to
+    // every pulse from now on. The simulated servos read pulses through the same
+    // calibration, so in simulation a trim moves nothing.
+    void set_trims(const int16_t* by_servo_id);
+
     void command(const BodyTwist& cmd, float now_s) { gait_.command(cmd, now_s); }
     StepCounts step(float dt, float now_s);
 

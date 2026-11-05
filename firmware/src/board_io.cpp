@@ -43,6 +43,15 @@ bool servo(uint8_t id, uint16_t us, uint16_t ms) {
     return true;
 }
 
+bool servos(const hexa::BusServo* s, int n, uint16_t ms) {
+    begin();
+    uint8_t frame[80];
+    const size_t len = hexa::servo_bus_frame(s, n, ms, frame, sizeof frame);
+    if (!len) return false;
+    Serial1.write(frame, len);  // 63 bytes for 18: 2.7 ms at 230400, into the UART's buffer
+    return true;
+}
+
 int battery_adc_mv() {
     begin();
     uint32_t sum = 0;

@@ -24,7 +24,7 @@ if STAMPED:
 else:
     from geometry_msgs.msg import Twist as CmdType
 
-STAND = {"coxa": 0.0, "femur": 0.297447, "tibia": -1.772154}  # the gait's neutral stance
+STAND = {"coxa": 0.0, "femur": 0.221394, "tibia": -1.919350}  # the gait's neutral stance
 
 
 class Probe:

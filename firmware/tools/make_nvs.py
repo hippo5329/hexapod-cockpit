@@ -12,6 +12,8 @@ the OTA password, so keep it private (mode 0600) and out of any public repositor
     ssid     Wi-Fi network (2.4 GHz)           psk      its key
     agent    micro-ROS agent IPv4 address      port     its UDP port (default 8888)
     ota_pw   OTA password (none: no OTA)
+    trims    18 comma-separated servo trims in us (by servo id 1-18, each within +-200): the
+             vendor's "deviation" values, read off the robot before its firmware is replaced
 
 The image goes to the `nvs` partition (0x9000, 0x5000 bytes) with the firmware, so every
 flash writes the whole robot description fresh. OTA updates leave it in place. Needs the
@@ -25,7 +27,7 @@ import sys
 import tempfile
 
 NVS_SIZE = 0x5000
-STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw"}
+STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims"}
 CHOICES = {"app": {"base", "console"}, "link": {"serial", "wifi"}, "sim": {"0", "1"}}
 
 
@@ -53,6 +55,11 @@ def load(path):
             ipaddress.IPv4Address(vals.get("agent", ""))
         except ValueError:
             sys.exit("link=wifi needs agent as an IPv4 address")
+    if "trims" in vals:
+        f = [t.strip() for t in vals["trims"].split(",")]
+        if len(f) != 18 or not all(t.lstrip("+-").isdigit() and abs(int(t)) <= 200 for t in f):
+            sys.exit("trims must be 18 comma-separated integers within +-200")
+        vals["trims"] = ",".join(str(int(t)) for t in f)
     for key in ("ssid", "psk"):
         if len(vals.get(key, "")) > {"ssid": 32, "psk": 63}[key]:
             sys.exit(f"{key} is too long")

@@ -4,10 +4,24 @@
 
 namespace hexa {
 
-ServoCal default_cal(int joint) {
+ServoCal default_cal(int k) {
     ServoCal c;
-    if (joint % kJointsPerLeg == 2) c.zero_rad = -1.57079633f;
+    const int joint = k % kJointsPerLeg;
+    const bool left = k / kJointsPerLeg >= kLegs / 2;  // lr, lm, lf
+    if (joint == 1) {
+        c.dir = left ? 1 : -1;
+        c.min_us = 857;
+        c.max_us = 2143;
+    } else if (joint == 2) {
+        c.dir = left ? -1 : 1;
+        c.zero_rad = -1.57079633f;
+    }
     return c;
+}
+
+uint8_t servo_id(int k) {
+    static const uint8_t kVendorLeg[kLegs] = {3, 2, 1, 6, 5, 4};  // rf rm rr lr lm lf
+    return static_cast<uint8_t>((kVendorLeg[k / kJointsPerLeg] - 1) * kJointsPerLeg + k % kJointsPerLeg + 1);
 }
 
 int angle_to_us(const ServoCal& c, float rad, bool* clamped) {

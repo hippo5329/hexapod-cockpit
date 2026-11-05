@@ -54,7 +54,7 @@ bool SimRobot::init(double slip, const GaitParams& gp, const SimServoParams& sp)
         const float ang[3] = {a.coxa, a.femur, a.tibia};
         for (int j = 0; j < 3; ++j) {
             const int k = leg * 3 + j;
-            cal_[k] = default_cal(k);  // TODO: trims from NVS (servo_trim tool)
+            cal_[k] = default_cal(k);
             servo_[k].reset(cal_[k], ang[j]);
             commanded_[k] = ang[j];
             pulse_us_[k] = angle_to_us(cal_[k], ang[j]);
@@ -63,6 +63,14 @@ bool SimRobot::init(double slip, const GaitParams& gp, const SimServoParams& sp)
     actual_feet(feet_, contact_);
     reset_poses();
     return true;
+}
+
+void SimRobot::set_trims(const int16_t* by_servo_id) {
+    for (int k = 0; k < kJoints; ++k) {
+        cal_[k].trim_us = by_servo_id[servo_id(k) - 1];
+        servo_[k].reset(cal_[k], servo_[k].angle());
+        pulse_us_[k] = angle_to_us(cal_[k], commanded_[k]);
+    }
 }
 
 void SimRobot::actual_feet(Vec3* out, bool* contact) const {

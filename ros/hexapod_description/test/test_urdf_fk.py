@@ -130,7 +130,8 @@ def test_urdf_fk_matches_firmware(urdf, fk_dump):
 
 
 def test_servo_range_matches_urdf_limits(urdf):
-    # hexa_servo default_cal: 500-2500 us = 180 deg around coxa 0, femur 0, tibia -90 deg.
+    # The usable ranges inside the servos' 280 deg (hexa_servo default_cal, centred at coxa 0,
+    # femur 0, tibia -90 deg): femur +-90 (the vendor's clamp), coxa +-90, tibia folded 0..180.
     for leg in LEGS:
         lim = {p: next(v for v in urdf.values() if v["name"] == f"{leg}_{p}") for p in ("coxa", "femur", "tibia")}
         assert lim["coxa"]["lower"] == pytest.approx(-math.pi / 2) and lim["coxa"]["upper"] == pytest.approx(math.pi / 2)
