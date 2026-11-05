@@ -154,7 +154,8 @@ steps per metre, so fewer touchdowns skid; more overlap helps a little; a higher
 **Heading hold.** The feet slip, so open loop a straight walk drifts (up to -0.24 rad in 20 s on tile) and a turn
 makes 60-65 % of its rate. While the gait walks, the board integrates (commanded - measured) yaw rate from the
 bias-corrected gyro (sim or real) and adds `yaw_hold` (NVS, default 1.0 /s; `0`: off) times that heading lost to the
-gait's yaw rate, the error capped at 0.3 rad and the trim at 0.25 rad/s, reset while standing. `/odom/gait` keeps
+gait's yaw rate, plus a slowly learned steady part (0.5 /s² on the heading lost, so a steady slip is not held
+by staying behind), the error capped at 0.3 rad and the trim at 0.25 rad/s, reset while standing. `/odom/gait` keeps
 the commanded yaw rate: the trim only makes the body turn as commanded. The `health` line shows the heading lost.
 
 **Cadence.** `period_s` is the fastest cycle, the one top speed needs. Asked for less, the gait slows its cycle,

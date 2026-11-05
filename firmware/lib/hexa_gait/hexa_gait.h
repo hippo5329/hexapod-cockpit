@@ -37,12 +37,15 @@ struct BodyTwist {
 
 // Heading hold and turn-rate feedback from the gyro: the feet slip, so a straight walk drifts (up
 // to -0.24 rad in 20 s on tile) and a turn makes 60-65 % of its rate. The integral of (commanded -
-// measured) yaw rate while walking is the heading lost; a trim of gain x that (capped) is added to
-// the gait's yaw rate (TripodGait::set_yaw_trim). Reset while standing. Gain 0: off.
+// measured) yaw rate while walking is the heading lost; a trim of gain x that, plus a slowly learned
+// steady part, is added to the gait's yaw rate (TripodGait::set_yaw_trim), capped. Reset while
+// standing. Gain 0: off.
 struct YawHoldParams {
     float gain = 1.0f;       // 1/s: trim (rad/s) per rad of heading lost
     float max_error = 0.3f;  // rad, the integral's cap (no wind-up against a wall)
     float max_trim = 0.25f;  // rad/s
+    float learn = 0.5f;      // 1/s^2: the learned part of the trim (a steady slip needs a steady trim,
+                             // which the heading term alone holds only by staying behind)
 };
 
 class YawHold {
@@ -54,19 +57,20 @@ public:
     // walks. Returns the trim.
     float update(float wz_cmd, float wz_meas, bool walking, float dt) {
         if (!walking || p_.gain <= 0) {
-            err_ = 0;
+            err_ = learned_ = 0;
             return 0;
         }
         err_ += (wz_cmd - wz_meas) * dt;
-        err_ = err_ > p_.max_error ? p_.max_error : err_ < -p_.max_error ? -p_.max_error : err_;
-        const float t = p_.gain * err_;
-        return t > p_.max_trim ? p_.max_trim : t < -p_.max_trim ? -p_.max_trim : t;
+        err_ = cap(err_, p_.max_error);
+        learned_ = cap(learned_ + p_.learn * err_ * dt, p_.max_trim);
+        return cap(p_.gain * err_ + learned_, p_.max_trim);
     }
     float error() const { return err_; }  // rad: the heading lost so far this walk
 
 private:
+    static float cap(float v, float m) { return v > m ? m : v < -m ? -m : v; }
     YawHoldParams p_;
-    float err_ = 0;
+    float err_ = 0, learned_ = 0;
 };
 
 class TripodGait {
