@@ -54,6 +54,7 @@ static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 2, "libmicroros built with fewer su
 #include "hexa_sensors.h"
 #include "hexa_world.h"
 #include "link.h"
+#include "settings.h"
 
 using namespace hexa;
 
@@ -601,6 +602,7 @@ void console_info() {
                   gp.max_stride, gait_pending ? "  (new ones pending: applied when it stands)" : "");
     Serial.printf("idle rest after %u s (0: never)  now %s\n", static_cast<unsigned>(idle_s),
                   robot.resting() ? "lying down" : robot.rest_level() > 0 ? "between" : "up");
+    Serial.printf("settings over Wi-Fi at boot: %s\n", hexa_settings::last_result());
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
     hexa_link::print_status(Serial);
 }
@@ -753,6 +755,7 @@ void setup() {
     enableLoopWDT();
     Serial.begin(HEXA_SERIAL_BAUD);
     prefs.begin("hexa", false);
+    hexa_settings::apply_staged(prefs);  // settings sent over Wi-Fi, before anything reads NVS
     sim_mode = prefs.getBool("sim", true) || !HEXA_BOARD_VERIFIED;
     // The real IMU in real mode only: sim mode publishes the simulated one, never both.
     if (!sim_mode) {
@@ -785,6 +788,7 @@ void setup() {
 
 void loop() {
     hexa_link::loop();
+    hexa_settings::trial_loop(prefs, hexa_link::network_up());
     if (console) {
         console_loop();
     } else {

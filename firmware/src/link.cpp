@@ -78,7 +78,7 @@ void ota_begin() {
         // the board half-way. It is armed again if the update fails; success reboots.
         disableLoopWDT();
         if (ota_start_cb) ota_start_cb();
-        Serial.println("ota: update started");
+        Serial.println(ArduinoOTA.getCommand() == U_SPIFFS ? "ota: settings upload started" : "ota: update started");
     });
     ArduinoOTA.onEnd([]() { Serial.println("ota: update written, rebooting"); });
     ArduinoOTA.onError([](ota_error_t e) {

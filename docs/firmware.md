@@ -71,6 +71,19 @@ The settings file carries the Wi-Fi key and the OTA password: keep it private (m
 public repository. Read the trims off the robot (the vendor firmware keeps them in its NVS) **before** our
 firmware replaces it.
 
+**Over Wi-Fi, without USB**, `tools/push_settings.py <board IP> <settings file> <password file>` changes
+settings on a board that has OTA. The file has the same lines, only the keys to change; the others stay. An
+empty value (`trims=`) removes a key that has a default (`app`, `sim`, `port`, `trims`, `imu_level`,
+`idle_s`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
+line) and its MD5 check, into the unused `spiffs` partition. The board reboots, and the robot stands in its
+boot pose. Before anything reads NVS, the board checks every line (`lib/hexa_settings`, the rules of
+`make_nvs.py`). It writes the keys only if all pass, then erases the upload, so the upload is applied once.
+`info` shows what happened (`settings over Wi-Fi at boot`). Some changes are refused because they would lose a
+robot that can only be reached over Wi-Fi: `link=serial`, removing `ssid`, `psk`, `agent` or `ota_pw`, and
+`link=wifi` without a network and an agent. A change of `link`, `ssid` or `psk` is on trial: if the board has
+not joined the network 60 s after that boot, it puts the old values back and reboots. A new `ota_pw` holds
+from the next upload on.
+
 ## Wi-Fi and OTA
 
 With `link=wifi` the board joins the network (modem sleep off) and talks to a micro-ROS agent over UDP

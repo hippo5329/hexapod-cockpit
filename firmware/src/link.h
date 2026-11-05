@@ -7,7 +7,8 @@
 //
 // Serial: micro-ROS over USB serial (921600). Wi-Fi: micro-ROS over UDP, and ArduinoOTA on
 // :3232 once the network is up; Serial then carries a status line. The keys are written to
-// NVS with the flash (tools/make_nvs.py) and never printed.
+// NVS with the flash (tools/make_nvs.py) or over Wi-Fi (tools/push_settings.py,
+// settings.h) and never printed.
 #pragma once
 
 #include <Arduino.h>

@@ -10,17 +10,17 @@ espota listens on (it connects back to fetch the image): run it on the board's L
 behind NAT.
 """
 import importlib.util
+import inspect
 import logging
 import os
 import random
 import sys
 
 
-def main():
-    if len(sys.argv) not in (4, 5):
-        sys.exit(__doc__)
-    host, image, pw_file = sys.argv[1:4]
-    espota_path = sys.argv[4] if len(sys.argv) == 5 else os.path.join(
+def upload(host, image, pw_file, espota_path=None, settings=False):
+    """Sends image with espota: a firmware update, or (settings) the SPIFFS command that
+    push_settings.py uses. The return code is espota's (0: done)."""
+    espota_path = espota_path or os.path.join(
         os.environ.get("PLATFORMIO_CORE_DIR") or os.path.expanduser("~/.platformio"),
         "packages", "framework-arduinoespressif32", "tools", "espota.py")
     with open(pw_file) as f:
@@ -35,7 +35,18 @@ def main():
     espota.PROGRESS = False
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     local_port = random.randint(10000, 60000)
-    rc = espota.serve(host, "0.0.0.0", 3232, local_port, password, False, image, espota.FLASH)
+    command = espota.SPIFFS if settings else espota.FLASH
+    # Newer espota.py takes an md5_target argument before the file name; older ones do not.
+    if "md5_target" in inspect.signature(espota.serve).parameters:
+        return espota.serve(host, "0.0.0.0", 3232, local_port, password, False, image, command)
+    return espota.serve(host, "0.0.0.0", 3232, local_port, password, image, command)
+
+
+def main():
+    if len(sys.argv) not in (4, 5):
+        sys.exit(__doc__)
+    host, image, pw_file = sys.argv[1:4]
+    rc = upload(host, image, pw_file, sys.argv[4] if len(sys.argv) == 5 else None)
     print(f"OTA {'done' if rc == 0 else 'FAILED'} (rc {rc})")
     sys.exit(rc)
 
