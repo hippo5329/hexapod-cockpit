@@ -27,6 +27,32 @@ float walk(Rng& r, float drift, float dt) { return drift * std::sqrt(dt) * r.uni
 
 }  // namespace
 
+void ImuMount::set(float roll, float pitch) {
+    roll_ = roll;
+    pitch_ = pitch;
+    // Sensor -> body = Ry(pitch) Rx(roll), the transpose of SimImu's body -> sensor.
+    const float cr = std::cos(roll), sr = std::sin(roll), cp = std::cos(pitch), sp = std::sin(pitch);
+    const float r[3][3] = {{cp, sp * sr, sp * cr}, {0, cr, -sr}, {-sp, cp * sr, cp * cr}};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) r_[i][j] = r[i][j];
+}
+
+void ImuMount::apply(ImuSample* s) const {
+    const float a[3] = {s->ax, s->ay, s->az}, g[3] = {s->gx, s->gy, s->gz};
+    float ab[3], gb[3];
+    for (int i = 0; i < 3; ++i) {
+        ab[i] = r_[i][0] * a[0] + r_[i][1] * a[1] + r_[i][2] * a[2];
+        gb[i] = r_[i][0] * g[0] + r_[i][1] * g[1] + r_[i][2] * g[2];
+    }
+    *s = {ab[0], ab[1], ab[2], gb[0], gb[1], gb[2]};
+}
+
+void ImuMount::level_from(const ImuSample& still, float* roll, float* pitch) {
+    // Gravity's reaction in the sensor frame is g (-sin p, cos p sin r, cos p cos r).
+    *roll = std::atan2(still.ay, still.az);
+    *pitch = std::atan2(-still.ax, std::sqrt(still.ay * still.ay + still.az * still.az));
+}
+
 void SimImu::init(const ImuParams& p, uint32_t seed) {
     p_ = p;
     rng_ = Rng(seed);

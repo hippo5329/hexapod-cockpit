@@ -84,6 +84,37 @@ Wall room[kRoomWalls];
 // "deviation" values read off this robot before our firmware replaced the vendor's.
 int16_t trims[kJoints] = {};
 
+// The real IMU's tilt on the board (NVS "imu_level": "roll,pitch" in degrees, each within
+// +-10, measured with the body level: the console's `imu` prints it). Every sample, real or
+// simulated, is turned into the body frame before the bias learner and the AHRS.
+ImuMount imu_mount;
+
+// One decimal field, optional sign: digits and at most one point.
+bool parse_float(String f, float* out) {
+    f.trim();
+    const unsigned start = (!f.isEmpty() && (f[0] == '-' || f[0] == '+')) ? 1 : 0;
+    int digits = 0, points = 0;
+    for (unsigned i = start; i < f.length(); ++i) {
+        if (isdigit(static_cast<unsigned char>(f[i]))) ++digits;
+        else if (f[i] == '.') ++points;
+        else return false;
+    }
+    if (digits == 0 || points > 1) return false;
+    *out = f.toFloat();
+    return true;
+}
+
+// "roll,pitch" in degrees, each within +-10; the mount untouched unless both are good.
+bool parse_imu_level(const String& csv, ImuMount* out) {
+    const int comma = csv.indexOf(',');
+    float r, p;
+    if (comma < 0 || !parse_float(csv.substring(0, comma), &r) || !parse_float(csv.substring(comma + 1), &p) ||
+        fabsf(r) > 10 || fabsf(p) > 10)
+        return false;
+    out->set(r * DEG_TO_RAD, p * DEG_TO_RAD);
+    return true;
+}
+
 // One integer field, optional sign, digits only.
 bool parse_int(String f, long* out) {
     f.trim();
@@ -153,6 +184,7 @@ void robot_tick(float now_s) {
     unreachable += robot.step(kTickS, now_s).unreachable;
     if (sim_mode) {
         imu_sample = sim_imu.step(kTickS, robot.truth_twist());
+        imu_mount.apply(&imu_sample);  // the same path as the real board's (unset: as mounted)
         // Every sample, connected or not: the estimates are settled when a session starts.
         // The gyro's bias is learned while the gait stands and taken out of every sample.
         gyro_bias.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, robot.gait().standing(), kTickS);
@@ -163,6 +195,7 @@ void robot_tick(float now_s) {
         float a[3], g[3];
         if (board_io::imu_read(a, g)) {
             imu_sample = {a[0], a[1], a[2], g[0], g[1], g[2]};
+            imu_mount.apply(&imu_sample);
             // Commanded standing, not measured: the servos lag the gait by a little; the learner
             // waits 0.5 s of standing before it learns.
             gyro_bias.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, robot.gait().standing(), kTickS);
@@ -550,7 +583,9 @@ void console_info() {
                                                                               : "other");
     Serial.printf("app %s  sim %s  board %s\n", prefs.getString("app", "base").c_str(), sim_mode ? "on" : "off",
                   HEXA_BOARD_VERIFIED ? "verified" : "NOT identified (real mode refused)");
-    Serial.printf("imu %s\n", sim_mode ? "simulated" : real_imu ? "QMI8658 (real)" : "none (the QMI8658 did not answer)");
+    Serial.printf("imu %s  mount roll %+.2f pitch %+.2f deg\n",
+                  sim_mode ? "simulated" : real_imu ? "QMI8658 (real)" : "none (the QMI8658 did not answer)",
+                  imu_mount.roll() * RAD_TO_DEG, imu_mount.pitch() * RAD_TO_DEG);
     Serial.printf("sonar %s\n", sim_mode ? "simulated" : real_sonar ? "I2C 0x77 (real)" : "none (did not answer)");
     const GaitParams& gp = robot.gait_params();
     Serial.printf("gait period %.2f s  duty %.2f  lift %.3f m  max stride %.3f m%s\n", gp.period_s, gp.duty, gp.lift,
@@ -634,8 +669,15 @@ void console_command(String cmd) {
         Serial.printf("imu who_am_i %d (QMI8658: 5)\n", board_io::imu_who_am_i());
         float a[3], g[3];
         if (board_io::imu_read(a, g))
+        {
             Serial.printf("imu accel %+.3f %+.3f %+.3f m/s2  gyro %+.4f %+.4f %+.4f rad/s (chip axes)\n", a[0], a[1],
                           a[2], g[0], g[1], g[2]);
+            // Still, with the body level (a level on the top plate): this is the robot's imu_level.
+            float r, p;
+            ImuMount::level_from({a[0], a[1], a[2], g[0], g[1], g[2]}, &r, &p);
+            Serial.printf("imu tilt of this reading: imu_level=%.2f,%.2f (in use %.2f,%.2f)\n", r * RAD_TO_DEG,
+                          p * RAD_TO_DEG, imu_mount.roll() * RAD_TO_DEG, imu_mount.pitch() * RAD_TO_DEG);
+        }
         board_io::imu_status(Serial);
     } else if (cmd == "app base" || cmd == "app console") {
         prefs.putString("app", cmd.substring(4));
@@ -712,6 +754,9 @@ void setup() {
     }
     const String trims_csv = prefs.getString("trims", "");
     if (!trims_csv.isEmpty() && !parse_trims(trims_csv, trims)) Serial.println("trims: NVS value refused, none used");
+    const String level_csv = prefs.getString("imu_level", "");
+    if (!level_csv.isEmpty() && !parse_imu_level(level_csv, &imu_mount))
+        Serial.println("imu_level: NVS value refused, the board taken as level");
     link_cfg = hexa_link::load(prefs);
     hexa_link::begin(link_cfg);
     // The loop stops for an update's length; the gait is told to stand first.

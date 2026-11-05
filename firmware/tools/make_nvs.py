@@ -14,6 +14,9 @@ the OTA password, so keep it private (mode 0600) and out of any public repositor
     ota_pw   OTA password (none: no OTA)
     trims    18 comma-separated servo trims in us (by servo id 1-18, each within +-200): the
              vendor's "deviation" values, read off the robot before its firmware is replaced
+    imu_level  roll,pitch of the IMU on its board, degrees (each within +-10), read with the body
+             level (a level on the top plate) from the console's `imu`: every sample is turned
+             into the body frame
 
 The image goes to the `nvs` partition (0x9000, 0x5000 bytes) with the firmware, so every
 flash writes the whole robot description fresh. OTA updates leave it in place. Needs the
@@ -27,7 +30,7 @@ import sys
 import tempfile
 
 NVS_SIZE = 0x5000
-STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims"}
+STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level"}
 CHOICES = {"app": {"base", "console"}, "link": {"serial", "wifi"}, "sim": {"0", "1"}}
 
 
@@ -55,6 +58,15 @@ def load(path):
             ipaddress.IPv4Address(vals.get("agent", ""))
         except ValueError:
             sys.exit("link=wifi needs agent as an IPv4 address")
+    if "imu_level" in vals:
+        f = [t.strip() for t in vals["imu_level"].split(",")]
+        try:
+            ok = len(f) == 2 and all(abs(float(t)) <= 10 for t in f)
+        except ValueError:
+            ok = False
+        if not ok:
+            sys.exit("imu_level must be roll,pitch in degrees, each within +-10")
+        vals["imu_level"] = ",".join("%.2f" % float(t) for t in f)
     if "trims" in vals:
         f = [t.strip() for t in vals["trims"].split(",")]
         if len(f) != 18 or not all(t.lstrip("+-").isdigit() and abs(int(t)) <= 200 for t in f):

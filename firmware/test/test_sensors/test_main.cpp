@@ -164,6 +164,52 @@ static void test_trims_reach_the_pulses_not_the_model() {
     TEST_ASSERT_FLOAT_WITHIN(0.003f, angle, r.joint_angle(0));
 }
 
+// A board mounted like the simulated one: the tilt read off a still minute, then every sample
+// turned back into the body frame: gravity on +z, a turn's rate on z.
+static void test_imu_mount_levels_the_board() {
+    SimImu imu;
+    imu.init();
+    const ImuParams& p = imu.params();
+    ImuSample mean{};
+    const int n = 3000;
+    for (int i = 0; i < n; ++i) {
+        const ImuSample s = imu.step(kDt, BodyTwist{0, 0, 0});
+        mean.ax += s.ax / n;
+        mean.ay += s.ay / n;
+        mean.az += s.az / n;
+    }
+    float roll, pitch;
+    ImuMount::level_from(mean, &roll, &pitch);
+    // The accelerometer's bias (0.03 m/s^2 at most) is about 0.2 deg of tilt.
+    TEST_ASSERT_FLOAT_WITHIN(0.004f, p.mount_roll, roll);
+    TEST_ASSERT_FLOAT_WITHIN(0.004f, p.mount_pitch, pitch);
+    ImuMount mount;
+    mount.set(roll, pitch);
+    ImuSample s = mean;
+    mount.apply(&s);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, s.ax);
+    TEST_ASSERT_FLOAT_WITHIN(1e-4f, 0.0f, s.ay);
+    TEST_ASSERT_FLOAT_WITHIN(0.15f, p.gravity, s.az);
+    // A pure yaw rate in the body reads on all three sensor axes; the mount puts it back on z.
+    float gx = 0, gy = 0, gz = 0;
+    for (int i = 0; i < 500; ++i) {
+        ImuSample t = imu.step(kDt, BodyTwist{0, 0, 1.0f});
+        mount.apply(&t);
+        gx += t.gx / 500;
+        gy += t.gy / 500;
+        gz += t.gz / 500;
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, gx);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.0f, gy);
+    TEST_ASSERT_FLOAT_WITHIN(0.03f, 1.0f, gz);
+    // Unset, a mount changes nothing.
+    ImuMount none;
+    ImuSample u = mean;
+    none.apply(&u);
+    TEST_ASSERT_EQUAL_FLOAT(mean.ax, u.ax);
+    TEST_ASSERT_EQUAL_FLOAT(mean.az, u.az);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_still_imu_noise_tilt_and_bias);
@@ -172,5 +218,6 @@ int main() {
     RUN_TEST(test_range_sees_the_room);
     RUN_TEST(test_range_follows_the_walk);
     RUN_TEST(test_trims_reach_the_pulses_not_the_model);
+    RUN_TEST(test_imu_mount_levels_the_board);
     return UNITY_END();
 }

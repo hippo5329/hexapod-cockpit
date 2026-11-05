@@ -53,6 +53,23 @@ struct ImuSample {
     float gx, gy, gz;  // rad/s, sensor frame
 };
 
+// The real board's tilt in the body, measured with the body level (NVS "imu_level"): sensor
+// axes = body axes turned by roll about x, then pitch about y, as SimImu's mount. apply()
+// turns a sensor-frame sample into the body frame, accelerometer and gyro alike.
+class ImuMount {
+public:
+    void set(float roll, float pitch);
+    void apply(ImuSample* s) const;
+    // From a still sample taken with the body level: the tilt that puts gravity back on +z.
+    static void level_from(const ImuSample& still, float* roll, float* pitch);
+    float roll() const { return roll_; }
+    float pitch() const { return pitch_; }
+
+private:
+    float roll_ = 0, pitch_ = 0;
+    float r_[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};  // sensor -> body
+};
+
 class SimImu {
 public:
     void init(const ImuParams& p = ImuParams(), uint32_t seed = 5329);

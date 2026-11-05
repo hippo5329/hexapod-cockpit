@@ -28,7 +28,7 @@ its firmware is not for this board.
 | range | Hiwonder's I2C ultrasonic module: it times its own echo and returns millimetres in register 0 (no trigger or echo pin); steady to about ±15 mm (measured) |
 | battery | the board's I2C monitor at 0x46 returns millivolts; GPIO33 has no divider on this board. 2S pack: 7.8 V at rest after delivery, ~0.25 V per 20 min standing on the floor (measured) |
 | leg geometry | the vendor's design figures: coxa 28.5 mm, femur 52 mm, tibia 72 mm (foot plate included); hips at (±56.5, ±31.5) mm and (0, ±43.4) mm; corner legs out at 45°, middle legs straight out. Not yet measured with a ruler |
-| standing pose | the vendor's standing pulses = femur +12.7°, knee −110°: the foot 70.1 mm out from the coxa axis, 60.0 mm below it. The IMU reads the body at about +3° roll, −4° pitch standing on a floor (measured) |
+| standing pose | the vendor's standing pulses = femur +12.7°, knee −110°: the foot 70.1 mm out from the coxa axis, 60.0 mm below it. With the top plate level, the IMU reads +3.4° roll, −3.9° pitch: the IMU sits tilted (chip or board), not the body (measured with a level and a turn in place; the floor ≤ 0.3°). That is this robot's `imu_level` |
 | trims | the vendor firmware keeps 18 per-servo "deviations" (µs) in its NVS; read them off before replacing it and carry them in the robot settings (`trims`) |
 | walking | on glazed tile with the default gait the robot reaches about two thirds of the commanded turn and distance (measured: gyro and camera); the hard feet slip |
 

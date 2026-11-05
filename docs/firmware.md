@@ -64,6 +64,7 @@ firmware (`tools/make_nvs.py <settings file> <out.bin>`, flashed at 0x9000; OTA 
 | `agent`, `port` | the micro-ROS agent's IPv4 address and UDP port (default 8888) |
 | `ota_pw` | the OTA password; none: no OTA |
 | `trims` | 18 comma-separated servo trims in µs, by servo id: the vendor's "deviation" values |
+| `imu_level` | `roll,pitch` in degrees (each within ±10): how the IMU sits on its board, read with the body level (a level on the top plate) from the console's `imu`. Every IMU sample is turned into the body frame with it; none: the board is taken as level |
 
 The settings file carries the Wi-Fi key and the OTA password: keep it private (mode 0600) and out of any
 public repository. Read the trims off the robot (the vendor firmware keeps them in its NVS) **before** our
@@ -165,7 +166,7 @@ the same code. A real QMI8658A will need dt from the sample timestamps.
 | `/joint_states` | `sensor_msgs/JointState` | 18 joints `rf_coxa` … `lf_tibia`; sim: simulated angle; real: commanded |
 | `/odom/gait` | `nav_msgs/Odometry` | integrated commanded body twist (dead reckoning, no slip), `odom` → `base_footprint`; covariances below |
 | `/gait_params` | `std_msgs/Float32MultiArray` | subscribed: the gait's parameters (above) |
-| `/imu/data` | `sensor_msgs/Imu` | 50 Hz, gyro bias taken out, with the AHRS's orientation (above). Sim: the simulated QMI8658A ([simulation.md](simulation.md)); real: the QMI8658 (±8 g, ±1024 dps, 224 Hz, on-chip low-pass ~30 Hz), the chip's axes |
+| `/imu/data` | `sensor_msgs/Imu` | 50 Hz, gyro bias taken out, with the AHRS's orientation (above). Sim: the simulated QMI8658A ([simulation.md](simulation.md)); real: the QMI8658 (±8 g, ±1024 dps, 224 Hz, on-chip low-pass ~30 Hz), in the body frame (the robot's `imu_level`) |
 | `/sonar` | `sensor_msgs/Range` | 10 Hz. Sim: the simulated ultrasonic; real: the I2C module. Nothing within reach reads `max_range`, never +INF (`nav2_collision_monitor` treats an out-of-span reading as an invalid source and stops) |
 | `/battery` | `sensor_msgs/BatteryState` | 1 Hz, the pack's voltage from the board's monitor (both modes; only when it answers) |
 | `/sim/ground_truth` | `nav_msgs/Odometry` | sim mode: the true pose, 5 Hz |
