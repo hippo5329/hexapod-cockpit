@@ -102,9 +102,11 @@ constexpr const char* kBoundary = "hexacamframe";
 
 esp_err_t stream_handler(httpd_req_t* req) {
     if (!cam_ok) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no camera");
+    // httpd keeps the pointer, not a copy, and sends the headers with the first chunk: a constant (the
+    // part-header buffer below was once reused here, and the response's headers were a part's).
+    static const char kType[] = "multipart/x-mixed-replace;boundary=hexacamframe";
+    httpd_resp_set_type(req, kType);
     char head[160];
-    snprintf(head, sizeof head, "multipart/x-mixed-replace;boundary=%s", kBoundary);
-    httpd_resp_set_type(req, head);
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     ++stream_clients;
     hexa_log::log(hexa_log::kInfo, "stream: client up (%u)", static_cast<unsigned>(stream_clients));
