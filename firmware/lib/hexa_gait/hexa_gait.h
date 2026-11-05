@@ -12,11 +12,16 @@
 
 namespace hexa {
 
+// Defaults tuned on miniHexa #1 on glazed tile (2026-11-05, gyro + camera; variant F of
+// seven): a slower cycle takes fewer, longer steps per metre, so fewer touchdowns skid, and
+// a 0.7 duty keeps both tripods down for a fifth of the cycle at each change. Turns came
+// from 0.38-0.41 of the command to 0.65-0.68, straight lines from 53 % to 67 % (the 1.0 s,
+// 0.5, 25 mm, 40 mm defaults before). Top speed max_stride / (duty * period): 57 mm/s.
 struct GaitParams {
-    float period_s = 1.0f;      // one full cycle (both tripods step once)
-    float duty = 0.5f;          // fraction of the cycle a foot is on the ground
-    float lift = 0.025f;        // swing height
-    float max_stride = 0.040f;  // longest stance travel of any foot
+    float period_s = 1.5f;      // one full cycle (both tripods step once)
+    float duty = 0.7f;          // fraction of the cycle a foot is on the ground
+    float lift = 0.030f;        // swing height
+    float max_stride = 0.060f;  // longest stance travel of any foot
     float cmd_timeout_s = 0.5f; // a command older than this counts as zero
 };
 

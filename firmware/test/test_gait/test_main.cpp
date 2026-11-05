@@ -121,10 +121,10 @@ static void test_params_only_while_standing() {
     TripodGait g;
     g.init(&minihexa_geometry(), GaitParams());
     GaitParams p;
-    p.period_s = 1.5f;
+    p.period_s = 1.2f;
     p.duty = 0.6f;
     TEST_ASSERT_TRUE(g.set_params(p));
-    TEST_ASSERT_EQUAL_FLOAT(1.5f, g.params().period_s);
+    TEST_ASSERT_EQUAL_FLOAT(1.2f, g.params().period_s);
     GaitParams bad = p;
     bad.duty = 0.4f;
     TEST_ASSERT_FALSE(g.set_params(bad));
@@ -137,7 +137,7 @@ static void test_params_only_while_standing() {
     GaitParams q = p;
     q.period_s = 2.0f;
     TEST_ASSERT_FALSE(g.set_params(q));
-    TEST_ASSERT_EQUAL_FLOAT(1.5f, g.params().period_s);
+    TEST_ASSERT_EQUAL_FLOAT(1.2f, g.params().period_s);
 }
 
 int main() {
