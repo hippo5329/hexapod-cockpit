@@ -114,10 +114,25 @@ void robot_init() {
     default_room(room);
 }
 
-// The real QMI8658 (real mode, when it answers). Its axes as mounted on the board, in the
-// body frame (x forward, y left, z up): chip x, y, z as they are. Checked on the robot:
-// gravity on +z at rest; the sign of z against a commanded turn.
+// The real QMI8658 (real mode, when it answers; linorobot2-cockpit's driver). Its axes as
+// mounted on the board, in the body frame (x forward, y left, z up): chip x, y, z as they
+// are. Checked on the robot: gravity on +z at rest; the sign of z against a commanded turn.
 bool real_imu = false;
+
+// The real ultrasonic (real mode, when it answers): Hiwonder's I2C module (0x77) times its
+// own echo and hands back millimetres; no trigger or echo pin, so linorobot2-cockpit's
+// interrupt-driven HC-SR04 driver does not apply, but its /range semantics do (range.cpp):
+// "nothing within reach" is max_range, never +INF or 0 -- an out-of-span reading makes
+// nav2_collision_monitor call the source invalid and stop the robot -- and the message is
+// seeded clear. Span and cone: the cockpit's HC-SR04 figures until this module's are measured.
+bool real_sonar = false;
+constexpr float kSonarMin = 0.02f, kSonarMax = 4.0f, kSonarFov = 15.0f * 0.0174533f;
+
+float sonar_clamped(float metres) {
+    if (!std::isfinite(metres) || metres > kSonarMax || metres <= 0.0f) return kSonarMax;
+    if (metres < kSonarMin) return kSonarMin;
+    return metres;
+}
 
 void robot_tick(float now_s) {
     unreachable += robot.step(kTickS, now_s).unreachable;
@@ -220,9 +235,10 @@ void msgs_init() {
     }
     set_string(&sonar_msg.header.frame_id, "sonar_link");
     sonar_msg.radiation_type = sensor_msgs__msg__Range__ULTRASOUND;
-    sonar_msg.field_of_view = sim_sonar.params().fov;
-    sonar_msg.min_range = sim_sonar.params().min_range;
-    sonar_msg.max_range = sim_sonar.params().max_range;
+    sonar_msg.field_of_view = real_sonar ? kSonarFov : sim_sonar.params().fov;
+    sonar_msg.min_range = real_sonar ? kSonarMin : sim_sonar.params().min_range;
+    sonar_msg.max_range = real_sonar ? kSonarMax : sim_sonar.params().max_range;
+    sonar_msg.range = sonar_msg.max_range;  // seeded clear
     // The real pack (2S Li-ion) in both modes, read off the board's monitor: only the voltage is
     // known; everything the board cannot measure is NaN or unknown (sensor_msgs/BatteryState).
     set_string(&battery_msg.header.frame_id, "base_link");
@@ -260,10 +276,12 @@ bool entities_create() {
                                             "imu/data") != RCL_RET_OK)
             return false;
     }
-    if (sim_mode) {
+    if (sim_mode || real_sonar) {
         if (rclc_publisher_init_best_effort(&sonar_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Range),
                                             "sonar") != RCL_RET_OK)
             return false;
+    }
+    if (sim_mode) {
         if (rclc_publisher_init_best_effort(&truth_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry),
                                             "sim/ground_truth") != RCL_RET_OK)
             return false;
@@ -279,10 +297,8 @@ bool entities_create() {
 void entities_destroy() {
     rmw_context_t* rmw = rcl_context_get_rmw_context(&support.context);
     (void)rmw_uros_set_context_entity_destroy_session_timeout(rmw, 0);
-    if (sim_mode) {
-        rcl_publisher_fini(&truth_pub, &node);
-        rcl_publisher_fini(&sonar_pub, &node);
-    }
+    if (sim_mode) rcl_publisher_fini(&truth_pub, &node);
+    if (sim_mode || real_sonar) rcl_publisher_fini(&sonar_pub, &node);
     if (sim_mode || real_imu) rcl_publisher_fini(&imu_pub, &node);
     rcl_publisher_fini(&battery_pub, &node);
     rcl_publisher_fini(&odom_pub, &node);
@@ -367,6 +383,12 @@ void publish_battery() {
 
 void publish_sonar() {
     stamp(&sonar_msg.header.stamp);
+    if (real_sonar) {
+        const int mm = board_io::sonar_mm();
+        if (mm >= 0) sonar_msg.range = sonar_clamped(mm / 1000.0f);  // a bus error keeps the last reading
+        rcl_publish(&sonar_pub, &sonar_msg, nullptr);
+        return;
+    }
     sonar_msg.range = sim_sonar.measure(robot.truth(), room, kRoomWalls);
     rcl_publish(&sonar_pub, &sonar_msg, nullptr);
 }
@@ -459,6 +481,7 @@ void base_loop() {
             if (frame % 2 == 0) publish_state();  // 25 Hz: joint_states 452 B, odom 732 B
             if (frame % 50 == 25) publish_battery();  // 1 Hz, ~100 B
             if (real_imu) publish_imu();                   // 50 Hz: the real QMI8658
+            if (real_sonar && frame % 5 == 0) publish_sonar();  // 10 Hz: the real ultrasonic
             if (sim_mode) {
                 publish_imu();                              // 50 Hz, 332 B
                 if (frame % 5 == 0) publish_sonar();        // 10 Hz, 56 B: an HC-SR04's pace
@@ -486,6 +509,7 @@ void console_info() {
     Serial.printf("app %s  sim %s  board %s\n", prefs.getString("app", "base").c_str(), sim_mode ? "on" : "off",
                   HEXA_BOARD_VERIFIED ? "verified" : "NOT identified (real mode refused)");
     Serial.printf("imu %s\n", sim_mode ? "simulated" : real_imu ? "QMI8658 (real)" : "none (the QMI8658 did not answer)");
+    Serial.printf("sonar %s\n", sim_mode ? "simulated" : real_sonar ? "I2C 0x77 (real)" : "none (did not answer)");
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
     hexa_link::print_status(Serial);
 }
@@ -567,6 +591,7 @@ void console_command(String cmd) {
         if (board_io::imu_read(a, g))
             Serial.printf("imu accel %+.3f %+.3f %+.3f m/s2  gyro %+.4f %+.4f %+.4f rad/s (chip axes)\n", a[0], a[1],
                           a[2], g[0], g[1], g[2]);
+        board_io::imu_status(Serial);
     } else if (cmd == "app base" || cmd == "app console") {
         prefs.putString("app", cmd.substring(4));
         Serial.printf("app = %s (after reboot)\n", cmd.substring(4).c_str());
@@ -632,7 +657,10 @@ void setup() {
     prefs.begin("hexa", false);
     sim_mode = prefs.getBool("sim", true) || !HEXA_BOARD_VERIFIED;
     // The real IMU in real mode only: sim mode publishes the simulated one, never both.
-    if (!sim_mode) real_imu = board_io::imu_begin();
+    if (!sim_mode) {
+        real_imu = board_io::imu_begin();
+        real_sonar = board_io::sonar_mm() >= 0;
+    }
     const String trims_csv = prefs.getString("trims", "");
     if (!trims_csv.isEmpty() && !parse_trims(trims_csv, trims)) Serial.println("trims: NVS value refused, none used");
     link_cfg = hexa_link::load(prefs);
