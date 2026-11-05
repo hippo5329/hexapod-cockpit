@@ -120,6 +120,10 @@ void robot_init() {
 // are. Checked on the robot: gravity on +z at rest; the sign of z against a commanded turn.
 bool real_imu = false;
 
+// New gait parameters from gait_params, waiting for the gait to stand (gait_callback).
+GaitParams pending_gait;
+bool gait_pending = false;
+
 // The real ultrasonic (real mode, when it answers): Hiwonder's I2C module (0x77) times its
 // own echo and hands back millimetres; no trigger or echo pin, so linorobot2-cockpit's
 // interrupt-driven HC-SR04 driver does not apply, but its /range semantics do (range.cpp):
@@ -187,8 +191,7 @@ rcl_subscription_t cmd_sub, gait_sub;
 // the gait next stands, if valid (TripodGait::params_valid); the console's `info` shows them.
 std_msgs__msg__Float32MultiArray gait_msg;
 float gait_msg_data[8];
-GaitParams pending_gait;
-bool gait_pending = false;
+
 rcl_publisher_t joint_pub, odom_pub, imu_pub, sonar_pub, truth_pub, battery_pub;
 #ifdef HEXA_CMD_VEL_STAMPED
 geometry_msgs__msg__TwistStamped cmd_msg;
