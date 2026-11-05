@@ -19,12 +19,14 @@ pio test -d firmware -e native            # IK, gait, servo, sensor and AHRS tes
 | `lib/hexa_world` | the robot model: gait, IK and pulses for both modes; in sim mode the simulated servos and the true pose from the feet. Plain C++ |
 | `lib/hexa_sensors` | the simulated IMU (QMI8658A) and ultrasonic. Plain C++ |
 | `lib/hexa_ahrs` | the AHRS: orientation from the IMU's gyro and accelerometer (below). Plain C++ |
+| `lib/hexa_power` | the final shutdown's low-battery trigger (Shutdown, below). Plain C++ |
+| `lib/hexa_settings` | settings sent over Wi-Fi: the format and the rules (Robot settings, below). Plain C++ |
 | `include/board_minihexa.h` | the controller board's pins and buses (verified on a robot) |
 | `src/main.cpp` | applications, micro-ROS, console |
 | `src/board_io.*` | the board's buses: the servo controller (UART), battery monitor, ultrasonic and IMU (I2C) |
 | `src/qmi8658.*` | the QMI8658 driver, ported from linorobot2-cockpit |
 | `src/link.*` | the micro-ROS link (USB serial or Wi-Fi UDP) and OTA updates |
-| `tools/` | `make_nvs.py` (robot settings → NVS image), `ota_upload.py` |
+| `tools/` | `make_nvs.py` (robot settings → NVS image), `ota_upload.py`, `push_settings.py` (settings over Wi-Fi) |
 | `test/` | Unity tests, `native` env |
 
 The libraries have no Arduino dependency, so the firmware, the tests, the host simulator and the ROS 2 node
@@ -34,15 +36,15 @@ The libraries have no Arduino dependency, so the firmware, the tests, the host s
 
 The NVS key `app` picks what boots:
 
-- **base**: micro-ROS over USB serial at 921600 baud, or over Wi-Fi (below). Subscribes `/cmd_vel` and
-  `/gait_params`; publishes the topics below. The gait runs at 50 Hz with or without an agent. A `/cmd_vel`
+- **base**: micro-ROS over USB serial at 921600 baud, or over Wi-Fi (below). Subscribes `/cmd_vel`,
+  `/gait_params` and `/shutdown`; publishes the topics below. The gait runs at 50 Hz with or without an agent. A `/cmd_vel`
   stream that stops for 0.5 s counts as zero: the robot finishes its steps and stands.
 - **console**: line commands on the USB serial port. On a Wi-Fi link the port is free, so the base application
   takes the same commands there too. `info` (chip, revision, flash size, MAC, last reset, mode, IMU, sonar,
   gait, link), `link`, `i2c` (bus scan), `bat`, `sonar`, `imu`, `trims`, `app base|console`, `sim on|off`,
-  `reboot`. Bench commands, sim mode only (the robot on a stand): `servo <id> <us> [ms]` moves one servo;
-  `foot <leg> <dx> <dy> <dz> [ms]` moves one leg's foot by millimetres from its standing position, body frame,
-  through the gait's IK and the servo calibration.
+  `reboot`, `shutdown` (the final shutdown, below). Bench commands, sim mode only (the robot on a stand):
+  `servo <id> <us> [ms]` moves one servo; `foot <leg> <dx> <dy> <dz> [ms]` moves one leg's foot by
+  millimetres from its standing position, body frame, through the gait's IK and the servo calibration.
 
 Press BOOT within two seconds after a reset to reach the console whatever `app` says. (BOOT held *through* the
 reset starts the ROM bootloader instead, as on every ESP32.)
@@ -65,6 +67,7 @@ firmware (`tools/make_nvs.py <settings file> <out.bin>`, flashed at 0x9000; OTA 
 | `ota_pw` | the OTA password; none: no OTA |
 | `trims` | 18 comma-separated servo trims in µs, by servo id: the vendor's "deviation" values |
 | `idle_s` | seconds without a command that moves before the robot lies down (Gait, below), 0-3600; default 30; `0`: never |
+| `low_bat_mv` | the final shutdown's battery floor (Shutdown, below) in mV, 5600-8000; default 6400 (3.2 V a cell); `0`: never |
 | `imu_level` | `roll,pitch` in degrees (each within ±10): how the IMU sits on its board, read with the body level (a level on the top plate) from the console's `imu`. Every IMU sample is turned into the body frame with it; none: the board is taken as level |
 
 The settings file carries the Wi-Fi key and the OTA password: keep it private (mode 0600) and out of any
@@ -74,7 +77,7 @@ firmware replaces it.
 **Over Wi-Fi, without USB**, `tools/push_settings.py <board IP> <settings file> <password file>` changes
 settings on a board that has OTA. The file has the same lines, only the keys to change; the others stay. An
 empty value (`trims=`) removes a key that has a default (`app`, `sim`, `port`, `trims`, `imu_level`,
-`idle_s`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
+`idle_s`, `low_bat_mv`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
 line) and its MD5 check, into the unused `spiffs` partition. The board reboots, and the robot stands in its
 boot pose. Before anything reads NVS, the board checks every line (`lib/hexa_settings`, the rules of
 `make_nvs.py`). It writes the keys only if all pass, then erases the upload, so the upload is applied once.
@@ -148,6 +151,20 @@ stands it up again over 3 s; commands are taken as zero until it is up, so a str
 there (a single message sent while it lies down is dropped). `info` shows the setting and whether it is up,
 lying down or between. Power off is the robot's switch.
 
+**Shutdown.** The final shutdown puts the robot down and the ESP32 into deep sleep: Wi-Fi, the CPUs and the
+link stop, and the board waits only for its BOOT button. It comes from `/shutdown` (`std_msgs/String`, data
+`shutdown`; any other data is ignored), from the console's `shutdown`, or from a flat pack: the battery
+monitor under `low_bat_mv` (default 6400 mV) for 30 readings in a row (1 Hz) taken while the gait stands or
+lies down (walking sags the pack; those readings are not counted). The robot drops its command, finishes the
+stride, lies down as in Idle, the micro-ROS session is closed, and the board sleeps (after 15 s at most, lying
+down or not). Commands are dropped from the request on. The servo controller has no "servos off", so it keeps
+holding the lying pose (feet up: the legs only) and stays on with the battery monitor; the servo line is held
+idle through the sleep. Press BOOT (or EN) to wake it: that is a boot, so the robot stands up into its boot
+pose; the press that woke it does not select the console. `info` says `woken from the final shutdown` and
+shows the floor. The power switch still cuts everything.
+
+    ros2 topic pub --once /shutdown std_msgs/msg/String "{data: shutdown}"
+
 ## AHRS
 
 The board fuses the IMU itself (`lib/hexa_ahrs`), so `/imu/data` carries an orientation and no filter node is
@@ -189,6 +206,7 @@ the same code. A real QMI8658A will need dt from the sample timestamps.
 | `/joint_states` | `sensor_msgs/JointState` | 18 joints `rf_coxa` … `lf_tibia`; sim: simulated angle; real: commanded |
 | `/odom/gait` | `nav_msgs/Odometry` | integrated commanded body twist (dead reckoning, no slip), `odom` → `base_footprint`; covariances below |
 | `/gait_params` | `std_msgs/Float32MultiArray` | subscribed: the gait's parameters (above) |
+| `/shutdown` | `std_msgs/String` | subscribed: data `shutdown` = the final shutdown (above) |
 | `/imu/data` | `sensor_msgs/Imu` | 50 Hz, gyro bias taken out, with the AHRS's orientation (above). Sim: the simulated QMI8658A ([simulation.md](simulation.md)); real: the QMI8658 (±8 g, ±1024 dps, 224 Hz, on-chip low-pass ~30 Hz), in the body frame (the robot's `imu_level`) |
 | `/sonar` | `sensor_msgs/Range` | 10 Hz. Sim: the simulated ultrasonic; real: the I2C module. Nothing within reach reads `max_range`, never +INF (`nav2_collision_monitor` treats an out-of-span reading as an invalid source and stops) |
 | `/battery` | `sensor_msgs/BatteryState` | 1 Hz, the pack's voltage from the board's monitor (both modes; only when it answers) |

@@ -6,7 +6,10 @@
 //            ticks at 50 Hz whether or not the agent is there; a lost command stream
 //            ends in a stand (hexa_gait's timeout), never a frozen stride.
 //   console  line commands on the serial port: info, link, i2c, servo, bat, sonar, imu, app,
-//            sim, reboot. On a Wi-Fi link the base app takes them too (Serial is free).
+//            sim, reboot, shutdown. On a Wi-Fi link the base app takes them too (Serial is free).
+//
+// The final shutdown (/shutdown, the console's `shutdown`, or a flat pack: NVS `low_bat_mv`):
+// the robot lies down, then the ESP32 goes into deep sleep until BOOT or EN is pressed.
 //
 // The link (NVS `link`, link.h): micro-ROS over USB serial, or over UDP on Wi-Fi with
 // ArduinoOTA beside it. On Wi-Fi the console and OTA work in either app.
@@ -19,7 +22,9 @@
 #include <Preferences.h>
 #include <Wire.h>
 #include <esp_chip_info.h>
+#include <driver/rtc_io.h>
 #include <esp_mac.h>
+#include <esp_sleep.h>
 #include <esp_system.h>
 
 #include <micro_ros_platformio.h>
@@ -32,13 +37,14 @@
 // The entity limits are compiled into libmicroros from esp32.meta, and micro_ros_platformio
 // builds that library only when it is missing: a raised limit does not reach a cached build.
 // Sim mode creates 6 publishers (joint_states, odom/gait, battery, imu/data, sonar, ground
-// truth) and 2 subscriptions; with a stale library the 6th failed and every session was torn
+// truth) and 3 subscriptions; with a stale library the 6th failed and every session was torn
 // down at once. Delete .pio/libdeps/<env>/micro_ros_platformio/libmicroros after editing the meta.
 static_assert(RMW_UXRCE_MAX_PUBLISHERS >= 6, "libmicroros built with fewer publishers than esp32.meta: rebuild it");
-static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 2, "libmicroros built with fewer subscriptions than esp32.meta: rebuild it");
+static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 3, "libmicroros built with fewer subscriptions than esp32.meta: rebuild it");
 #include <nav_msgs/msg/odometry.h>
 #include <sensor_msgs/msg/battery_state.h>
 #include <std_msgs/msg/float32_multi_array.h>
+#include <std_msgs/msg/string.h>
 #include <sensor_msgs/msg/imu.h>
 #include <sensor_msgs/msg/joint_state.h>
 #include <sensor_msgs/msg/range.h>
@@ -51,6 +57,7 @@ static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 2, "libmicroros built with fewer su
 #include "board_io.h"
 #include "board_minihexa.h"
 #include "hexa_ahrs.h"
+#include "hexa_power.h"
 #include "hexa_sensors.h"
 #include "hexa_world.h"
 #include "link.h"
@@ -167,6 +174,26 @@ bool real_imu = false;
 uint32_t idle_s = 30;
 float last_move_s = 0;
 
+// The final shutdown: lying down once it is asked for (its reason), then deep sleep. Nothing
+// stands it up again: commands are dropped. The servo controller has no "servos off" and
+// keeps holding the lying pose; the ESP32 itself drops from ~100 mA (Wi-Fi) to its sleep
+// current. BOOT or EN wakes it: a boot, so the robot stands up into its boot pose.
+const char* shutdown_why = nullptr;
+float shutdown_t0 = 0;
+constexpr float kShutdownMaxS = 15;  // a stride to finish and 3 s down; then it sleeps anyway
+// A pack under low_bat_mv (NVS, default 6400: 3.2 V a cell; 0: never) for 30 s in a row while
+// the robot stands or lies still. The board's monitor, read at 1 Hz with or without an agent.
+LowBattery low_battery;
+int battery_mv = -1;
+
+void shutdown_request(const char* why) {
+    if (shutdown_why) return;
+    shutdown_why = why;
+    shutdown_t0 = millis() / 1000.0f;
+    robot.command({0, 0, 0}, shutdown_t0);  // the stride finishes, the gait stands, then it lies down
+    Serial.printf("shutdown (%s): lying down, then deep sleep; BOOT or EN wakes it\n", why);
+}
+
 // New gait parameters from gait_params, waiting for the gait to stand (gait_callback).
 GaitParams pending_gait;
 bool gait_pending = false;
@@ -188,7 +215,7 @@ float sonar_clamped(float metres) {
 
 void robot_tick(float now_s) {
     if (gait_pending && robot.set_gait_params(pending_gait)) gait_pending = false;
-    if (idle_s && now_s - last_move_s > idle_s) robot.rest(true);
+    if (shutdown_why || (idle_s && now_s - last_move_s > idle_s)) robot.rest(true);
     unreachable += robot.step(kTickS, now_s).unreachable;
     if (sim_mode) {
         imu_sample = sim_imu.step(kTickS, robot.truth_twist());
@@ -236,11 +263,15 @@ rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
 rclc_executor_t executor;
-rcl_subscription_t cmd_sub, gait_sub;
+rcl_subscription_t cmd_sub, gait_sub, shutdown_sub;
 // gait_params (std_msgs/Float32MultiArray): period s, duty, lift m, max stride m. Applied when
 // the gait next stands, if valid (TripodGait::params_valid); the console's `info` shows them.
 std_msgs__msg__Float32MultiArray gait_msg;
 float gait_msg_data[8];
+// shutdown (std_msgs/String): the final shutdown when data is "shutdown"; anything else is
+// ignored, so a stray empty message on the topic does not put the robot to sleep.
+std_msgs__msg__String shutdown_msg;
+char shutdown_msg_data[16];
 
 rcl_publisher_t joint_pub, odom_pub, imu_pub, sonar_pub, truth_pub, battery_pub;
 #ifdef HEXA_CMD_VEL_STAMPED
@@ -271,6 +302,7 @@ void cmd_callback(const void* msg) {
 #else
     const geometry_msgs__msg__Twist& t = *static_cast<const geometry_msgs__msg__Twist*>(msg);
 #endif
+    if (shutdown_why) return;
     const float now_s = millis() / 1000.0f;
     if (t.linear.x != 0 || t.linear.y != 0 || t.angular.z != 0) last_move_s = now_s;
     robot.command({static_cast<float>(t.linear.x), static_cast<float>(t.linear.y),
@@ -291,7 +323,15 @@ void gait_callback(const void* msg) {
     gait_pending = true;
 }
 
+void shutdown_callback(const void* msg) {
+    const auto* m = static_cast<const std_msgs__msg__String*>(msg);
+    if (m->data.size == 8 && strncmp(m->data.data, "shutdown", 8) == 0) shutdown_request("/shutdown");
+}
+
 void msgs_init() {
+    shutdown_msg.data.data = shutdown_msg_data;
+    shutdown_msg.data.capacity = sizeof shutdown_msg_data;
+    shutdown_msg.data.size = 0;
     gait_msg.data.data = gait_msg_data;
     gait_msg.data.capacity = sizeof gait_msg_data / sizeof gait_msg_data[0];
     gait_msg.data.size = 0;
@@ -344,6 +384,9 @@ bool entities_create() {
     if (rclc_subscription_init_default(&gait_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
                                        "gait_params") != RCL_RET_OK)
         return false;
+    if (rclc_subscription_init_default(&shutdown_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+                                       "shutdown") != RCL_RET_OK)
+        return false;
     if (rclc_publisher_init_best_effort(&joint_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState),
                                         "joint_states") != RCL_RET_OK)
         return false;
@@ -369,10 +412,13 @@ bool entities_create() {
             return false;
     }
     executor = rclc_executor_get_zero_initialized_executor();
-    if (rclc_executor_init(&executor, &support.context, 2, &allocator) != RCL_RET_OK) return false;
+    if (rclc_executor_init(&executor, &support.context, 3, &allocator) != RCL_RET_OK) return false;
     if (rclc_executor_add_subscription(&executor, &cmd_sub, &cmd_msg, &cmd_callback, ON_NEW_DATA) != RCL_RET_OK)
         return false;
     if (rclc_executor_add_subscription(&executor, &gait_sub, &gait_msg, &gait_callback, ON_NEW_DATA) != RCL_RET_OK)
+        return false;
+    if (rclc_executor_add_subscription(&executor, &shutdown_sub, &shutdown_msg, &shutdown_callback, ON_NEW_DATA) !=
+        RCL_RET_OK)
         return false;
     rmw_uros_sync_session(1000);
     return true;
@@ -389,6 +435,7 @@ void entities_destroy() {
     rcl_publisher_fini(&joint_pub, &node);
     rcl_subscription_fini(&cmd_sub, &node);
     rcl_subscription_fini(&gait_sub, &node);
+    rcl_subscription_fini(&shutdown_sub, &node);
     rclc_executor_fini(&executor);
     rcl_node_fini(&node);
     rclc_support_fini(&support);
@@ -457,12 +504,11 @@ void publish_imu() {
     rcl_publish(&imu_pub, &imu_msg, nullptr);
 }
 
-// 1 Hz: the board's battery monitor (I2C, ~1 ms); a board without one publishes nothing.
+// 1 Hz: the last reading of the board's battery monitor; a board without one publishes nothing.
 void publish_battery() {
-    const int mv = board_io::battery_i2c_mv();
-    if (mv <= 0) return;
+    if (battery_mv <= 0) return;
     stamp(&battery_msg.header.stamp);
-    battery_msg.voltage = mv / 1000.0f;
+    battery_msg.voltage = battery_mv / 1000.0f;
     rcl_publish(&battery_pub, &battery_msg, nullptr);
 }
 
@@ -525,6 +571,20 @@ void agent_step() {
 
 void console_info();
 
+// The ESP32's lowest state that BOOT can end: deep sleep, the RTC domain kept for the
+// BOOT pin's wake (GPIO0, pressed = low). Wi-Fi and the CPUs are off; a wake is a boot.
+void deep_sleep() {
+    Serial.println("shutdown: deep sleep now; press BOOT or EN to wake");
+    Serial.flush();
+    board_io::before_deep_sleep();
+    pinMode(HEXA_LED_PIN, OUTPUT);
+    digitalWrite(HEXA_LED_PIN, LOW);
+    rtc_gpio_pullup_en(static_cast<gpio_num_t>(HEXA_BOOT_PIN));
+    rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(HEXA_BOOT_PIN));
+    esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(HEXA_BOOT_PIN), 0);
+    esp_deep_sleep_start();
+}
+
 void base_setup() {
     robot_init();
     msgs_init();
@@ -559,6 +619,16 @@ void base_loop() {
         if (static_cast<int32_t>(now - next_tick) > 100) next_tick = now;  // fell behind: no burst
         robot_tick(now / 1000.0f);
         ++frame;
+        if (frame % 50 == 25) {
+            battery_mv = board_io::battery_i2c_mv();
+            if (low_battery.update(battery_mv, robot.gait().standing())) shutdown_request("battery low");
+        }
+        // Lying down (the last frame went out this tick), or out of time: the session closed
+        // so the agent drops it at once, then sleep.
+        if (shutdown_why && (robot.resting() || now / 1000.0f - shutdown_t0 > kShutdownMaxS)) {
+            if (agent == Agent::kConnected) entities_destroy();
+            deep_sleep();
+        }
         // The serial link's budget (docs/firmware.md): ~50 KB/s of messages, about half of
         // 921600 baud. The full set at 25 Hz ground truth was ~65 KB/s and saturated it: rates
         // fell, and on Lyrical the loop sometimes hung (the watchdog in setup() now resets it).
@@ -578,6 +648,7 @@ void base_loop() {
 
 // ---------------------------------------------------------------- console
 String line;
+bool console = false;
 
 void console_info() {
     esp_chip_info_t ci;
@@ -590,6 +661,7 @@ void console_info() {
     Serial.printf("last reset: %s\n", esp_reset_reason() == ESP_RST_TASK_WDT ? "loop watchdog (the loop hung)"
                                       : esp_reset_reason() == ESP_RST_PANIC  ? "panic"
                                       : esp_reset_reason() == ESP_RST_POWERON ? "power-on or EN"
+                                      : esp_reset_reason() == ESP_RST_DEEPSLEEP ? "woken from the final shutdown"
                                                                               : "other");
     Serial.printf("app %s  sim %s  board %s\n", prefs.getString("app", "base").c_str(), sim_mode ? "on" : "off",
                   HEXA_BOARD_VERIFIED ? "verified" : "NOT identified (real mode refused)");
@@ -602,6 +674,8 @@ void console_info() {
                   gp.max_stride, gait_pending ? "  (new ones pending: applied when it stands)" : "");
     Serial.printf("idle rest after %u s (0: never)  now %s\n", static_cast<unsigned>(idle_s),
                   robot.resting() ? "lying down" : robot.rest_level() > 0 ? "between" : "up");
+    Serial.printf("shutdown when the battery stays under %d mV for 30 s (0: never)  battery %d mV\n",
+                  low_battery.floor_mv(), board_io::battery_i2c_mv());
     Serial.printf("settings over Wi-Fi at boot: %s\n", hexa_settings::last_result());
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
     hexa_link::print_status(Serial);
@@ -707,8 +781,12 @@ void console_command(String cmd) {
         }
     } else if (cmd == "reboot") {
         ESP.restart();
+    } else if (cmd == "shutdown") {
+        // The base app lies down first; the console drives no gait, so it sleeps at once.
+        if (console) deep_sleep();
+        else shutdown_request("console");
     } else if (cmd.length()) {
-        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | foot <leg> <dx> <dy> <dz> [ms] | trims | bat | sonar | imu | app base|console | sim on|off | reboot");
+        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | foot <leg> <dx> <dy> <dz> [ms] | trims | bat | sonar | imu | app base|console | sim on|off | reboot | shutdown");
     }
 }
 
@@ -732,8 +810,6 @@ void console_loop() {
         }
     }
 }
-
-bool console = false;
 
 // BOOT pressed in the first two seconds -> console. Polled, so a reset into the ROM
 // bootloader (BOOT held through reset) never gets here.
@@ -774,6 +850,14 @@ void setup() {
         if (parse_int(idle_str, &idle) && idle >= 0 && idle <= 3600) idle_s = static_cast<uint32_t>(idle);
         else Serial.println("idle_s: NVS value refused, 30 s used");
     }
+    long low_bat = 6400;
+    const String low_bat_str = prefs.getString("low_bat_mv", "");
+    if (!low_bat_str.isEmpty() &&
+        !(parse_int(low_bat_str, &low_bat) && (low_bat == 0 || (low_bat >= 5600 && low_bat <= 8000)))) {
+        Serial.println("low_bat_mv: NVS value refused, 6400 mV used");
+        low_bat = 6400;
+    }
+    low_battery.init(static_cast<int>(low_bat));
     const String level_csv = prefs.getString("imu_level", "");
     if (!level_csv.isEmpty() && !parse_imu_level(level_csv, &imu_mount))
         Serial.println("imu_level: NVS value refused, the board taken as level");
@@ -781,6 +865,13 @@ void setup() {
     hexa_link::begin(link_cfg);
     // The loop stops for an update's length; the gait is told to stand first.
     hexa_link::on_ota([]() { robot.command({0, 0, 0}, millis() / 1000.0f); }, nullptr);
+    // A wake from the final shutdown is a BOOT press: its release waited for, so the press
+    // that woke the board is not taken as "console".
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
+        rtc_gpio_deinit(static_cast<gpio_num_t>(HEXA_BOOT_PIN));  // back from the RTC domain
+        pinMode(HEXA_BOOT_PIN, INPUT_PULLUP);
+        for (int i = 0; i < 500 && digitalRead(HEXA_BOOT_PIN) == LOW; ++i) delay(10);
+    }
     console = boot_button_pressed(2000) || prefs.getString("app", "base") == "console";
     if (console) console_setup();
     else base_setup();

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <driver/gpio.h>
 
 #include "board_minihexa.h"
 #include "hexa_servo.h"
@@ -26,6 +27,9 @@ bool i2c_read(uint8_t addr, uint8_t reg, uint8_t* buf, int n) {
 
 void begin() {
     if (started) return;
+    // Held high by before_deep_sleep() when this boot is a wake from the final shutdown.
+    gpio_hold_dis(static_cast<gpio_num_t>(HEXA_SERVO_UART_TX));
+    gpio_deep_sleep_hold_dis();
     Serial1.begin(HEXA_SERVO_UART_BAUD, SERIAL_8N1, HEXA_SERVO_UART_RX, HEXA_SERVO_UART_TX);
     Wire.begin(HEXA_I2C_SDA, HEXA_I2C_SCL);
     // 100 kHz, the vendor's: the I2C ultrasonic stopped answering at 400 kHz. An IMU burst
@@ -100,6 +104,16 @@ int imu_who_am_i() {
     begin();
     uint8_t b;
     return i2c_read(HEXA_IMU_ADDR, 0, &b, 1) ? b : -1;
+}
+
+void before_deep_sleep() {
+    begin();
+    Serial1.flush();  // the last frame out
+    Serial1.end();
+    pinMode(HEXA_SERVO_UART_TX, OUTPUT);
+    digitalWrite(HEXA_SERVO_UART_TX, HIGH);
+    gpio_hold_en(static_cast<gpio_num_t>(HEXA_SERVO_UART_TX));
+    gpio_deep_sleep_hold_en();
 }
 
 }  // namespace board_io

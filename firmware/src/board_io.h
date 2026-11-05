@@ -25,5 +25,8 @@ bool imu_begin();
 // One sample in the chip's axes: specific force in m/s^2, rate in rad/s.
 bool imu_read(float accel[3], float gyro[3]);
 void imu_status(Print& out);
+// Before the final shutdown's deep sleep: the servo line held idle (high) through the sleep,
+// so the controller never reads a floating pin as a frame. begin() releases it at the next boot.
+void before_deep_sleep();
 
 }  // namespace board_io

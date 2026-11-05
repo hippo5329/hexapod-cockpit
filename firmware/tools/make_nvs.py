@@ -15,6 +15,8 @@ the OTA password, so keep it private (mode 0600) and out of any public repositor
     trims    18 comma-separated servo trims in us (by servo id 1-18, each within +-200): the
              vendor's "deviation" values, read off the robot before its firmware is replaced
     idle_s   seconds without a command that moves before the robot lies down (default 30; 0: never)
+    low_bat_mv  the final shutdown's battery floor in mV: under it for 30 s with the robot still,
+             it lies down and the ESP32 sleeps (default 6400; 0: never; else 5600-8000)
     imu_level  roll,pitch of the IMU on its board, degrees (each within +-10), read with the body
              level (a level on the top plate) from the console's `imu`: every sample is turned
              into the body frame
@@ -31,7 +33,7 @@ import sys
 import tempfile
 
 NVS_SIZE = 0x5000
-STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level", "idle_s"}
+STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level", "idle_s", "low_bat_mv"}
 CHOICES = {"app": {"base", "console"}, "link": {"serial", "wifi"}, "sim": {"0", "1"}}
 
 
@@ -61,6 +63,9 @@ def load(path):
             sys.exit("link=wifi needs agent as an IPv4 address")
     if "idle_s" in vals and not (vals["idle_s"].isdigit() and int(vals["idle_s"]) <= 3600):
         sys.exit("idle_s must be 0-3600 (seconds)")
+    if "low_bat_mv" in vals and not (vals["low_bat_mv"].isdigit() and
+                                     (int(vals["low_bat_mv"]) == 0 or 5600 <= int(vals["low_bat_mv"]) <= 8000)):
+        sys.exit("low_bat_mv must be 0 or 5600-8000 (mV)")
     if "imu_level" in vals:
         f = [t.strip() for t in vals["imu_level"].split(",")]
         try:
