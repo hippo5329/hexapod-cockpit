@@ -205,6 +205,18 @@ void setup() {
         return;
     }
     WiFi.mode(WIFI_STA);
+    // Why a join fails, in the log: the reason code of every disconnect (WIFI_REASON_*: 2 auth expired,
+    // 15 4-way handshake timeout (wrong key), 201 no AP found, 205 connection failed).
+    WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) {
+        hexa_log::log(hexa_log::kWarning, "wifi: disconnected, reason %d", info.wifi_sta_disconnected.reason);
+    }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    // What it can hear, once (names, channels, levels; the wanted one marked).
+    const int n = WiFi.scanNetworks();
+    for (int i = 0; i < n && i < 12; ++i)
+        hexa_log::log(hexa_log::kInfo, "wifi: sees '%s' ch %d %d dBm%s", WiFi.SSID(i).c_str(), WiFi.channel(i),
+                      static_cast<int>(WiFi.RSSI(i)), WiFi.SSID(i) == ssid ? "  <- wanted" : "");
+    hexa_log::log(hexa_log::kInfo, "wifi: %d network(s) heard", n);
+    WiFi.scanDelete();
     WiFi.setHostname(name.c_str());
     WiFi.setSleep(false);  // modem sleep adds 100+ ms to every frame
     WiFi.setAutoReconnect(true);
