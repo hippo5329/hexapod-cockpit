@@ -27,6 +27,15 @@
 #include <rclc/executor.h>
 #include <rclc/rclc.h>
 #include <rmw_microros/rmw_microros.h>
+#include <rmw_microxrcedds_c/config.h>
+
+// The entity limits are compiled into libmicroros from esp32.meta, and micro_ros_platformio
+// builds that library only when it is missing: a raised limit does not reach a cached build.
+// Sim mode creates 6 publishers (joint_states, odom/gait, battery, imu/data, sonar, ground
+// truth) and 2 subscriptions; with a stale library the 6th failed and every session was torn
+// down at once. Delete .pio/libdeps/<env>/micro_ros_platformio/libmicroros after editing the meta.
+static_assert(RMW_UXRCE_MAX_PUBLISHERS >= 6, "libmicroros built with fewer publishers than esp32.meta: rebuild it");
+static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 2, "libmicroros built with fewer subscriptions than esp32.meta: rebuild it");
 #include <nav_msgs/msg/odometry.h>
 #include <sensor_msgs/msg/battery_state.h>
 #include <std_msgs/msg/float32_multi_array.h>
