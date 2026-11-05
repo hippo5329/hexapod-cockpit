@@ -92,6 +92,8 @@ void TripodGait::step(float dt, float now_s) {
     const bool moving = std::fabs(cmd_.vx) > kZeroCmd || std::fabs(cmd_.vy) > kZeroCmd ||
                         std::fabs(cmd_.wz) > kZeroCmd;
     if (!moving && settled()) {
+        if (!standing_)
+            for (int i = 0; i < kLegs; ++i) foot_[i] = neutral_foot(*g_, i);  // within 1 mm: onto it
         standing_ = true;
         idle_s_ = 0;
         return;
