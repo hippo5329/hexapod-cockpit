@@ -114,6 +114,11 @@ void robot_init() {
     default_room(room);
 }
 
+// The real QMI8658 (real mode, when it answers). Its axes as mounted on the board, in the
+// body frame (x forward, y left, z up): chip x, y, z as they are. Checked on the robot:
+// gravity on +z at rest; the sign of z against a commanded turn.
+bool real_imu = false;
+
 void robot_tick(float now_s) {
     unreachable += robot.step(kTickS, now_s).unreachable;
     if (sim_mode) {
@@ -124,6 +129,17 @@ void robot_tick(float now_s) {
         gyro_bias.correct(&imu_sample.gx, &imu_sample.gy, &imu_sample.gz);
         ahrs.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, imu_sample.ax, imu_sample.ay, imu_sample.az,
                     kTickS);
+    } else if (real_imu) {
+        float a[3], g[3];
+        if (board_io::imu_read(a, g)) {
+            imu_sample = {a[0], a[1], a[2], g[0], g[1], g[2]};
+            // Commanded standing, not measured: the servos lag the gait by a little; the learner
+            // waits 0.5 s of standing before it learns.
+            gyro_bias.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, robot.gait().standing(), kTickS);
+            gyro_bias.correct(&imu_sample.gx, &imu_sample.gy, &imu_sample.gz);
+            ahrs.update(imu_sample.gx, imu_sample.gy, imu_sample.gz, imu_sample.ax, imu_sample.ay, imu_sample.az,
+                        kTickS);
+        }
     }
     if (!sim_mode) {
         // Every tick the 18 pulses in one frame, each to be reached in one tick. The first
@@ -239,10 +255,12 @@ bool entities_create() {
     if (rclc_publisher_init_best_effort(&battery_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, BatteryState),
                                         "battery") != RCL_RET_OK)
         return false;
-    if (sim_mode) {
+    if (sim_mode || real_imu) {
         if (rclc_publisher_init_best_effort(&imu_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
                                             "imu/data") != RCL_RET_OK)
             return false;
+    }
+    if (sim_mode) {
         if (rclc_publisher_init_best_effort(&sonar_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Range),
                                             "sonar") != RCL_RET_OK)
             return false;
@@ -264,8 +282,8 @@ void entities_destroy() {
     if (sim_mode) {
         rcl_publisher_fini(&truth_pub, &node);
         rcl_publisher_fini(&sonar_pub, &node);
-        rcl_publisher_fini(&imu_pub, &node);
     }
+    if (sim_mode || real_imu) rcl_publisher_fini(&imu_pub, &node);
     rcl_publisher_fini(&battery_pub, &node);
     rcl_publisher_fini(&odom_pub, &node);
     rcl_publisher_fini(&joint_pub, &node);
@@ -440,6 +458,7 @@ void base_loop() {
         if (agent == Agent::kConnected) {
             if (frame % 2 == 0) publish_state();  // 25 Hz: joint_states 452 B, odom 732 B
             if (frame % 50 == 25) publish_battery();  // 1 Hz, ~100 B
+            if (real_imu) publish_imu();                   // 50 Hz: the real QMI8658
             if (sim_mode) {
                 publish_imu();                              // 50 Hz, 332 B
                 if (frame % 5 == 0) publish_sonar();        // 10 Hz, 56 B: an HC-SR04's pace
@@ -466,6 +485,7 @@ void console_info() {
                                                                               : "other");
     Serial.printf("app %s  sim %s  board %s\n", prefs.getString("app", "base").c_str(), sim_mode ? "on" : "off",
                   HEXA_BOARD_VERIFIED ? "verified" : "NOT identified (real mode refused)");
+    Serial.printf("imu %s\n", sim_mode ? "simulated" : real_imu ? "QMI8658 (real)" : "none (the QMI8658 did not answer)");
     Serial.printf("build %s %s\n", __DATE__, __TIME__);
     hexa_link::print_status(Serial);
 }
@@ -543,6 +563,10 @@ void console_command(String cmd) {
         Serial.printf("sonar %d mm\n", board_io::sonar_mm());
     } else if (cmd == "imu") {
         Serial.printf("imu who_am_i %d (QMI8658: 5)\n", board_io::imu_who_am_i());
+        float a[3], g[3];
+        if (board_io::imu_read(a, g))
+            Serial.printf("imu accel %+.3f %+.3f %+.3f m/s2  gyro %+.4f %+.4f %+.4f rad/s (chip axes)\n", a[0], a[1],
+                          a[2], g[0], g[1], g[2]);
     } else if (cmd == "app base" || cmd == "app console") {
         prefs.putString("app", cmd.substring(4));
         Serial.printf("app = %s (after reboot)\n", cmd.substring(4).c_str());
@@ -607,6 +631,8 @@ void setup() {
     Serial.begin(HEXA_SERIAL_BAUD);
     prefs.begin("hexa", false);
     sim_mode = prefs.getBool("sim", true) || !HEXA_BOARD_VERIFIED;
+    // The real IMU in real mode only: sim mode publishes the simulated one, never both.
+    if (!sim_mode) real_imu = board_io::imu_begin();
     const String trims_csv = prefs.getString("trims", "");
     if (!trims_csv.isEmpty() && !parse_trims(trims_csv, trims)) Serial.println("trims: NVS value refused, none used");
     link_cfg = hexa_link::load(prefs);
