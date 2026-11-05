@@ -15,7 +15,9 @@ namespace hexa_log {
 
 enum Severity : uint8_t { kErr = 3, kWarning = 4, kNotice = 5, kInfo = 6 };
 
-void begin(Preferences& prefs, bool wifi_link, bool serial_free);
+// host and app name the sender in each line (the camera board shares this module: camera/).
+void begin(Preferences& prefs, bool wifi_link, bool serial_free, const char* host = "minihexa",
+           const char* app = "hexapod");
 void log(Severity sev, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 // Every loop: the backlog out once the network is up.
 void loop(bool network_up);

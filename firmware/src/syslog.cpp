@@ -9,8 +9,8 @@
 namespace hexa_log {
 namespace {
 
-constexpr const char* kHost = "minihexa";
-constexpr const char* kApp = "hexapod";
+const char* kHost = "minihexa";
+const char* kApp = "hexapod";
 constexpr uint16_t kDefaultPort = 5140;
 constexpr int kBacklog = 12;
 constexpr size_t kLine = 200;
@@ -35,7 +35,9 @@ void send(uint8_t sev, const char* msg) {
 
 }  // namespace
 
-void begin(Preferences& prefs, bool wifi_link, bool serial_free) {
+void begin(Preferences& prefs, bool wifi_link, bool serial_free, const char* host, const char* app) {
+    kHost = host;
+    kApp = app;
     wifi = wifi_link;
     serial_out = serial_free;
     const String s = prefs.getString("syslog_ip", "");
