@@ -1006,11 +1006,6 @@ void setup() {
     }
     console = boot_button_pressed(2000) || prefs.getString("app", "base") == "console";
     hexa_log::begin(prefs, link_cfg.kind == hexa_link::Kind::kWifi, link_cfg.kind == hexa_link::Kind::kWifi || console);
-    // The Advanced kit's modules, if plugged in: named in the boot line (no drivers yet).
-    const bool vision = board_io::i2c_present(HEXA_VISION_ADDR), voice = board_io::i2c_present(HEXA_VOICE_ADDR);
-    hexa_log::log(hexa_log::kNotice, "modules: imu %s, sonar %s, vision 0x52 %s, voice 0x34 %s",
-                  board_io::imu_who_am_i() == 5 ? "yes" : "no", board_io::sonar_mm() >= 0 ? "yes" : "no",
-                  vision ? "yes" : "no", voice ? "yes" : "no");
     const esp_reset_reason_t why = esp_reset_reason();
     hexa_log::log(hexa_log::kNotice, "boot: %s, %s %s, app %s, sim %s, reset %s, settings %s, idle %u s, low_bat %d mV",
                   hexa_link::elf_sha(), __DATE__, __TIME__, console ? "console" : "base", sim_mode ? "on" : "off",
