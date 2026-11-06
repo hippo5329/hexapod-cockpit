@@ -128,7 +128,9 @@ servos: every tick one frame to the servo controller with all 18 pulses (the fir
 wherever the legs hang to the stand). `/joint_states` carries the *commanded* angles, because a PWM servo reports
 nothing back. The sensors are the real parts, each published only when it answers at boot: the QMI8658 as
 `/imu/data`, the ultrasonic as `/sonar`, the battery monitor as `/battery` (that one in both modes). **Nothing
-simulated is published in real mode.**
+simulated is published in real mode.** The QMI8658 sits on the board turned a quarter turn: its x points left and its y back, so
+every sample is mapped into the body frame (x forward, y left, z up) as (-chip y, chip x, chip z) before anything
+else (found with body poses: a commanded roll read as pitch). `imu_level` is measured in the body frame.
 
 ## Servos
 

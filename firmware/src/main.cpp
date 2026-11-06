@@ -167,9 +167,13 @@ void robot_init() {
 }
 
 // The real QMI8658 (real mode, when it answers; linorobot2-cockpit's driver). Its axes as
-// mounted on the board, in the body frame (x forward, y left, z up): chip x, y, z as they
-// are. Checked on the robot: gravity on +z at rest; the sign of z against a commanded turn.
+// mounted on the board, in the body frame (x forward, y left, z up): chip x points left and chip y
+// back, z up: body = (-chip y, chip x, chip z), for both the accelerometer and the gyro
+// (imu_to_body). Measured on the robot with body poses: a commanded roll of +10 deg read as pitch,
+// a pitch as roll, until this mapping (2026-11-06); gravity on +z and the sign of z against a
+// commanded turn were the first checks and hold either way.
 bool real_imu = false;
+ImuSample imu_to_body(const float a[3], const float g[3]) { return {-a[1], a[0], a[2], -g[1], g[0], g[2]}; }
 
 // Idle mode (SimRobot::rest): after idle_s (NVS "idle_s", default 30; 0: never) without a
 // command that moves, the robot lies down on its belly; the next command that moves stands it
@@ -240,7 +244,7 @@ void robot_tick(float now_s) {
     } else if (real_imu) {
         float a[3], g[3];
         if (board_io::imu_read(a, g)) {
-            imu_sample = {a[0], a[1], a[2], g[0], g[1], g[2]};
+            imu_sample = imu_to_body(a, g);
             imu_mount.apply(&imu_sample);
             // Commanded standing, not measured: the servos lag the gait by a little; the learner
             // waits 0.5 s of standing before it learns.
@@ -877,11 +881,12 @@ void console_command(String cmd) {
         float a[3], g[3];
         if (board_io::imu_read(a, g))
         {
-            Serial.printf("imu accel %+.3f %+.3f %+.3f m/s2  gyro %+.4f %+.4f %+.4f rad/s (chip axes)\n", a[0], a[1],
-                          a[2], g[0], g[1], g[2]);
+            const ImuSample b = imu_to_body(a, g);
+            Serial.printf("imu accel %+.3f %+.3f %+.3f m/s2  gyro %+.4f %+.4f %+.4f rad/s (body axes)\n", b.ax, b.ay,
+                          b.az, b.gx, b.gy, b.gz);
             // Still, with the body level (a level on the top plate): this is the robot's imu_level.
             float r, p;
-            ImuMount::level_from({a[0], a[1], a[2], g[0], g[1], g[2]}, &r, &p);
+            ImuMount::level_from(b, &r, &p);
             Serial.printf("imu tilt of this reading: imu_level=%.2f,%.2f (in use %.2f,%.2f)\n", r * RAD_TO_DEG,
                           p * RAD_TO_DEG, imu_mount.roll() * RAD_TO_DEG, imu_mount.pitch() * RAD_TO_DEG);
         }
