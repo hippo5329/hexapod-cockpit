@@ -175,3 +175,15 @@ int main() { hexa::RangeParams p; std::printf("%.7f %.7f %.7f\n", p.x, p.y, p.ya
     assert T[0][3] == pytest.approx(sx, abs=1e-6) and T[1][3] == pytest.approx(sy, abs=1e-6)
     assert math.atan2(T[1][0], T[0][0]) == pytest.approx(syaw, abs=1e-6)
     assert T[2][3] > 0.05  # above the floor, at the front of the body
+
+
+def test_camera_frame_is_the_measured_mount(urdf):
+    """camera_link 0.05 m ahead, 0.11 m above the body's underside; the optical frame looks along +x."""
+    cam, opt = urdf["camera_link"], urdf["camera_optical_frame"]
+    assert cam["parent"] == "base_link" and opt["parent"] == "camera_link"
+    assert [cam["T"][i][3] for i in range(3)] == pytest.approx([0.050, 0, 0.110 - 0.025 / 2], abs=1e-9)
+    T = matmul(cam["T"], opt["T"])
+    # optical z (the view) is body +x, optical x (image right) is body -y, optical y (image down) is body -z
+    assert [T[i][2] for i in range(3)] == pytest.approx([1, 0, 0], abs=1e-9)
+    assert [T[i][0] for i in range(3)] == pytest.approx([0, -1, 0], abs=1e-9)
+    assert [T[i][1] for i in range(3)] == pytest.approx([0, 0, -1], abs=1e-9)

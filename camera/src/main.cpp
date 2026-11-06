@@ -5,7 +5,7 @@
 //   http://<ip>:81/stream    MJPEG (multipart/x-mixed-replace), paced to the `fps` setting; one client
 //   http://<ip>/capture      one JPEG
 //   http://<ip>/status       JSON: settings, measured rate and size, Wi-Fi, memory
-//   http://<ip>/control      ?vflip=0|1&hmirror=0|1: flip for the mount, applied and kept in NVS
+//   http://<ip>/control      ?vflip=0|1&hmirror=0|1&frame=<size>: kept in NVS (a new size reboots)
 //
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
 // (OTA on 3232, none: no OTA), name (hostname, default hexacam), frame (qqvga, qvga, vga, svga, xga, hd;
@@ -171,13 +171,18 @@ esp_err_t status_handler(httpd_req_t* req) {
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
 
-// /control?vflip=0|1&hmirror=0|1: flip the image for the mount, at once and kept in NVS (a mount
-// change needs no USB). Every value is checked before any is applied; the reply is /status.
+// /control?vflip=0|1&hmirror=0|1&frame=<size>: flip the image for the mount (at once) and set the frame
+// size, all kept in NVS (a mount change needs no USB). The frame buffers are sized at camera init, so a
+// new frame size reboots the board after the reply. Every value is checked before any is applied; the
+// reply is /status.
+uint32_t restart_at = 0;
+
 esp_err_t control_handler(httpd_req_t* req) {
     const char* const keys[] = {"vflip", "hmirror"};
     bool* const flags[] = {&vflip, &hmirror};
-    char q[64], v[4][2] = {};
-    bool given[2] = {};
+    char q[96], v[2][2] = {}, fv[8] = {};
+    bool given[2] = {}, frame_given = false;
+    const Frame* new_frame = nullptr;
     if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
         for (int i = 0; i < 2; i++) {
             char val[4];
@@ -189,9 +194,18 @@ esp_err_t control_handler(httpd_req_t* req) {
             given[i] = true;
             v[i][0] = val[0];
         }
+        if (httpd_query_key_value(q, "frame", fv, sizeof fv) == ESP_OK) {
+            frame_given = true;
+            for (const Frame& k : kFrames)
+                if (!strcmp(fv, k.name)) new_frame = &k;
+            if (!new_frame) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "frame takes qqvga, qvga, vga, svga, xga or hd");
+                return ESP_FAIL;
+            }
+        }
     }
-    if (!given[0] && !given[1]) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "usage: /control?vflip=0|1&hmirror=0|1");
+    if (!given[0] && !given[1] && !frame_given) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "usage: /control?vflip=0|1&hmirror=0|1&frame=<size>");
         return ESP_FAIL;
     }
     Preferences w;
@@ -202,13 +216,18 @@ esp_err_t control_handler(httpd_req_t* req) {
         *flags[i] = v[i][0] == '1';
         w.putString(keys[i], v[i]);
     }
+    if (new_frame) w.putString("frame", new_frame->name);
     w.end();
     if (s) {
         s->set_vflip(s, vflip);
         s->set_hmirror(s, hmirror);
     }
-    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d (kept)", vflip, hmirror);
-    return status_handler(req);
+    const bool reboot = new_frame && new_frame->size != frame;
+    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d frame %s (kept)%s", vflip, hmirror,
+                  new_frame ? new_frame->name : frame_name(frame), reboot ? ", rebooting for the frame size" : "");
+    const esp_err_t r = status_handler(req);
+    if (reboot) restart_at = millis() + 500;
+    return r;
 }
 
 void http_begin() {
@@ -272,6 +291,7 @@ void setup() {
 }
 
 void loop() {
+    if (restart_at && static_cast<int32_t>(millis() - restart_at) >= 0) ESP.restart();
     const bool up = WiFi.status() == WL_CONNECTED;
     hexa_log::loop(up);
     if (up && !net_started) {

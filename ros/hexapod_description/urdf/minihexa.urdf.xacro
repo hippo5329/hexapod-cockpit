@@ -23,6 +23,7 @@
   <xacro:property name="hip_y_mid" value="0.0434"/>
   <xacro:property name="stand_z" value="-0.0600"/>
   <xacro:property name="link_r" value="0.006"/>
+  <xacro:property name="body_h" value="0.025"/>
 
   <material name="body"><color rgba="0.20 0.22 0.25 1"/></material>
   <material name="coxa"><color rgba="0.85 0.45 0.10 1"/></material>
@@ -40,11 +41,11 @@
 
   <link name="base_link">
     <visual>
-      <geometry><box size="0.140 0.087 0.025"/></geometry>
+      <geometry><box size="0.140 0.087 ${body_h}"/></geometry>
       <material name="body"/>
     </visual>
     <collision>
-      <geometry><box size="0.140 0.087 0.025"/></geometry>
+      <geometry><box size="0.140 0.087 ${body_h}"/></geometry>
     </collision>
     <inertial>
       <mass value="0.25"/>
@@ -70,6 +71,23 @@
     <parent link="base_link"/>
     <child link="sonar_link"/>
     <origin xyz="0.080 0 0.020" rpy="0 0 0"/>
+  </joint>
+
+  <!-- The camera (hexacam, OV3660), measured on the robot: 0.05 m ahead of the body centre and
+       0.11 m above the underside of the body (the box below, 0.025 tall about base_link), looking
+       forward. camera_optical_frame is the image's (z forward, x right, y down), the bridge's
+       frame_id. -->
+  <link name="camera_link"/>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="0.050 0 ${0.110 - body_h/2}" rpy="0 0 0"/>
+  </joint>
+  <link name="camera_optical_frame"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_optical_frame"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
   </joint>
 
   <!-- A link drawn as a cylinder along its own +x, `bar_len` long. -->
