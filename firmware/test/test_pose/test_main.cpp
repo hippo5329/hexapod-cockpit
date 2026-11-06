@@ -149,6 +149,19 @@ static void test_tilt_hold_closes_the_sag() {
     TEST_ASSERT_FLOAT_WITHIN(0.006f, 0.1745f, 0.7f * r.pose().roll);
     TEST_ASSERT_FLOAT_WITHIN(0.006f, -0.1396f, 0.7f * r.pose().pitch);
     TEST_ASSERT_TRUE(r.pose_settled());  // inside the dead band: still
+    // From +10 to -10 roll (the trim must travel ~8 deg): integrating only at the target, the body lands
+    // within half a degree, no overshoot past it.
+    r.set_pose({0, 0, 0, -0.1745f, 0, 0});
+    float worst = 0;
+    for (int i = 0; i < 500; ++i, t += kDt) {
+        const float mr = 0.7f * r.pose().roll;
+        if (r.pose_at_target() && th.update(r.pose_target().roll, r.pose_target().pitch, mr, 0.7f * r.pose().pitch, true, kDt))
+            r.set_tilt_trim(th.roll(), th.pitch());
+        r.step(kDt, t);
+        if (i > 100) worst = std::fmin(worst, mr);
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.009f, -0.1745f, 0.7f * r.pose().roll);
+    TEST_ASSERT_TRUE(worst > -0.1745f - 0.009f);  // no overshoot past half a degree
     // A target the sag cannot reach within the cap: the trim stops at 8 deg.
     r.set_pose({0, 0, 0, 0.2618f, 0, 0});
     for (int i = 0; i < 600; ++i, t += kDt) {

@@ -174,6 +174,10 @@ StepCounts SimRobot::step(float dt, float now_s) {
         return std::fabs(p.x) + std::fabs(p.y) + std::fabs(p.z) + std::fabs(p.roll) + std::fabs(p.pitch) + std::fabs(p.yaw);
     };
     if (norm(next) <= norm(pose_) || feet_fit(scaled(next), r)) pose_ = next;
+    // Within one tick's step of the target (the trims move it a little every tick).
+    pose_at_target_ = r == 0 && std::fabs(pose_.roll - t.roll * w) <= da && std::fabs(pose_.pitch - t.pitch * w) <= da &&
+                      std::fabs(pose_.yaw - t.yaw * w) <= da && std::fabs(pose_.x - t.x * w) <= ds &&
+                      std::fabs(pose_.y - t.y * w) <= ds && std::fabs(pose_.z - t.z * w) <= ds;
     pose_applied_ = scaled(pose_);
     pose_moved_ = before.x != pose_applied_.x || before.y != pose_applied_.y || before.z != pose_applied_.z ||
                   before.roll != pose_applied_.roll || before.pitch != pose_applied_.pitch || before.yaw != pose_applied_.yaw;

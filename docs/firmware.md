@@ -213,7 +213,8 @@ locomotion: odometry does not see it, and the gyro's bias is learned only while 
 **Tilt hold.** On the robot the body reached ~70 % of a commanded roll or pitch: the legs and servos give under
 the load. Standing (real IMU only), the integral of (commanded - measured) roll and pitch, measured by the AHRS
 against gravity, is added to the pose's roll and pitch: `tilt_hold` (NVS, default 1.5 /s; `0`: off), at most 8°
-each, within the pose limits and the reach gate; inside 0.3° of the target it holds still, so the pose settles.
+each, within the pose limits and the reach gate; inside 0.3° of the target it holds still, so the pose settles, and it integrates only once the pose has reached its
+target (on the ramp the error is the ramp's: integrating it overshot by 1-2°).
 So a pose's roll and pitch are relative to gravity: a neutral pose is a level body, on a slope or straddling a
 step. Walking, lying down or shutting down resets it. The simulated IMU does not feel a body pose, so sim mode has
 none. The `health` line shows the trims.

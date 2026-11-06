@@ -151,6 +151,9 @@ public:
     const BodyPose& pose() const { return pose_applied_; }
     // The pose did not move this tick (the gyro's bias may be learned).
     bool pose_settled() const { return !pose_moved_; }
+    // The pose has reached its target, trims included (not still on its way at the limits' rates):
+    // TiltHold integrates only then, so it does not wind up on the ramp.
+    bool pose_at_target() const { return pose_at_target_; }
     // 0 standing .. 1 lying down.
     float rest_level() const { return rest_s_; }
     bool resting() const { return rest_s_ >= 1.0f; }
@@ -196,7 +199,7 @@ private:
     RestParams rp_;
     BodyPose pose_target_, pose_, pose_applied_;
     float tilt_roll_ = 0, tilt_pitch_ = 0;
-    bool pose_moved_ = false;
+    bool pose_moved_ = false, pose_at_target_ = true;
     bool feet_fit(const BodyPose& applied, float rest) const;
     Vec3 foot_target(int leg, float rest) const;
     bool rest_want_ = false;

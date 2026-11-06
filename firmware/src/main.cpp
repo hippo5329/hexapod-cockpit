@@ -240,7 +240,10 @@ void robot_tick(float now_s) {
         const float mr = std::atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y));
         const float mp = std::asin(std::fmax(-1.0f, std::fmin(1.0f, 2 * (q.w * q.y - q.z * q.x))));
         const bool still = real_imu && ahrs.seeded() && robot.gait().standing() && robot.rest_level() == 0 && !shutdown_why;
-        if (tilt_hold.update(robot.pose_target().roll, robot.pose_target().pitch, mr, mp, still, kTickS))
+        // Integrate only once the pose is at its target: on the ramp the error is the ramp's, and
+        // integrating it overshot the next step by 1-2 deg on the robot.
+        if ((!still || robot.pose_at_target()) &&
+            tilt_hold.update(robot.pose_target().roll, robot.pose_target().pitch, mr, mp, still, kTickS))
             robot.set_tilt_trim(tilt_hold.roll(), tilt_hold.pitch());
     }
     unreachable += robot.step(kTickS, now_s).unreachable;
