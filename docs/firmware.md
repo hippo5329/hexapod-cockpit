@@ -202,7 +202,8 @@ shows the floor. The power switch still cuts everything.
 target goes through the inverse pose before the IK, standing or walking. It is reached at 40 mm/s and 0.5 rad/s,
 and only as far as every foot stays reachable with no pulse clamped: each axis alone reaches its limit standing,
 all six at once about 70 % of them, so a combined pose stops where the legs end. While walking a fifth of it is
-kept (every corner is reachable at top speed). Lying down eases it out and standing up brings it back. It is not
+kept (every corner is reachable at top speed). Lying down eases it out and standing up brings it back; a pose
+command counts as use (the idle timer starts again) and stands a resting robot up. It is not
 locomotion: odometry does not see it, and the gyro's bias is learned only while it is still. `info` and the
 `health` line show it.
 

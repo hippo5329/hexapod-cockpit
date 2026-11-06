@@ -343,6 +343,10 @@ void shutdown_callback(const void* msg) {
 }
 
 void set_body_pose(const BodyPose& p, const char* from) {
+    if (shutdown_why) return;  // lying down for good
+    // A pose is use: the idle timer starts again, and a robot lying down stands up for it.
+    last_move_s = millis() / 1000.0f;
+    robot.rest(false);
     robot.set_pose(p);
     const BodyPose& t = robot.pose_target();
     hexa_log::log(hexa_log::kInfo, "pose (%s): roll %+.1f pitch %+.1f yaw %+.1f deg  x %+.0f y %+.0f z %+.0f mm", from,
