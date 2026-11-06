@@ -76,6 +76,45 @@ Vec3 to_posed_body(const BodyPose& p, const Vec3& f);
 // And back: a point in the posed body's frame, in the stance frame.
 Vec3 from_posed_body(const BodyPose& p, const Vec3& b);
 
+// Tilt feedback: on the robot the body reaches ~70 % of a commanded roll or pitch (the legs and servos
+// give under the load). Standing, the integral of (commanded - measured) roll and pitch, the
+// measured being the IMU's (gravity-referenced), is added to the pose's roll and pitch
+// (SimRobot::set_tilt_trim), capped; inside the dead band it holds still, so a settled pose stops
+// moving. So a pose's roll and pitch are relative to gravity: a neutral pose is a level body, on a
+// slope or straddling a step. Off (and reset) while walking or lying down. Gain 0: off.
+struct TiltHoldParams {
+    float gain = 1.5f;        // 1/s: trim change per second per rad of error
+    float max_trim = 0.14f;   // rad (8 deg), each axis
+    float deadband = 0.005f;  // rad (0.3 deg)
+};
+
+class TiltHold {
+public:
+    explicit TiltHold(const TiltHoldParams& p = TiltHoldParams()) : p_(p) {}
+    void set_gain(float g) { p_.gain = g; }
+    const TiltHoldParams& params() const { return p_; }
+    // One tick; returns whether the trims changed.
+    bool update(float cmd_roll, float cmd_pitch, float meas_roll, float meas_pitch, bool active, float dt) {
+        if (!active || p_.gain <= 0) {
+            const bool was = roll_ != 0 || pitch_ != 0;
+            roll_ = pitch_ = 0;
+            return was;
+        }
+        const float er = cmd_roll - meas_roll, ep = cmd_pitch - meas_pitch;
+        const float r0 = roll_, p0 = pitch_;
+        if (er > p_.deadband || er < -p_.deadband) roll_ = cap(roll_ + p_.gain * er * dt);
+        if (ep > p_.deadband || ep < -p_.deadband) pitch_ = cap(pitch_ + p_.gain * ep * dt);
+        return roll_ != r0 || pitch_ != p0;
+    }
+    float roll() const { return roll_; }
+    float pitch() const { return pitch_; }
+
+private:
+    float cap(float v) const { return v > p_.max_trim ? p_.max_trim : v < -p_.max_trim ? -p_.max_trim : v; }
+    TiltHoldParams p_;
+    float roll_ = 0, pitch_ = 0;
+};
+
 struct RestParams {
     float reach = 0.075f;  // hip-to-foot, horizontal
     float z = -0.010f;     // foot height in the body frame (stand_z -0.060)
@@ -103,6 +142,11 @@ public:
     // The body pose to go to (clamped; zero: neutral). pose(): where it is now, as applied (the
     // rest level eases it out); pose_settled(): at the target and not lying down or between.
     void set_pose(const BodyPose& p) { pose_target_ = clamp_pose(p); }
+    // TiltHold's trims, added to the target's roll and pitch (within the limits, and the reach gate).
+    void set_tilt_trim(float roll, float pitch) {
+        tilt_roll_ = roll;
+        tilt_pitch_ = pitch;
+    }
     const BodyPose& pose_target() const { return pose_target_; }
     const BodyPose& pose() const { return pose_applied_; }
     // The pose did not move this tick (the gyro's bias may be learned).
@@ -151,6 +195,7 @@ private:
     BodyTwist truth_twist_{0, 0, 0};
     RestParams rp_;
     BodyPose pose_target_, pose_, pose_applied_;
+    float tilt_roll_ = 0, tilt_pitch_ = 0;
     bool pose_moved_ = false;
     bool feet_fit(const BodyPose& applied, float rest) const;
     Vec3 foot_target(int leg, float rest) const;

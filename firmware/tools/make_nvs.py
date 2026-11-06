@@ -20,6 +20,7 @@ the OTA password, so keep it private (mode 0600) and out of any public repositor
     syslog_ip, syslog_port  the UDP syslog sink (linorobot2-cockpit's receiver; port default 5140);
              none: no syslog. Wi-Fi links only
     yaw_hold heading hold / turn-rate feedback gain from the gyro, 1/s (default 1.0; 0: off; max 5)
+    tilt_hold  body tilt feedback gain from the IMU while standing, 1/s (default 1.5; 0: off; max 5)
     imu_level  roll,pitch of the IMU on its board, degrees (each within +-10), read with the body
              level (a level on the top plate) from the console's `imu`: every sample is turned
              into the body frame
@@ -36,7 +37,7 @@ import sys
 import tempfile
 
 NVS_SIZE = 0x5000
-STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level", "idle_s", "low_bat_mv", "syslog_ip", "syslog_port", "yaw_hold"}
+STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level", "idle_s", "low_bat_mv", "syslog_ip", "syslog_port", "yaw_hold", "tilt_hold"}
 CHOICES = {"app": {"base", "console"}, "link": {"serial", "wifi"}, "sim": {"0", "1"}}
 
 
@@ -74,13 +75,14 @@ def load(path):
             ipaddress.IPv4Address(vals["syslog_ip"])
         except ValueError:
             sys.exit("syslog_ip must be an IPv4 address")
-    if "yaw_hold" in vals:
-        try:
-            ok = 0 <= float(vals["yaw_hold"]) <= 5 and "e" not in vals["yaw_hold"].lower()
-        except ValueError:
-            ok = False
-        if not ok:
-            sys.exit("yaw_hold must be a gain 0-5 (1/s)")
+    for key in ("yaw_hold", "tilt_hold"):
+        if key in vals:
+            try:
+                ok = 0 <= float(vals[key]) <= 5 and "e" not in vals[key].lower()
+            except ValueError:
+                ok = False
+            if not ok:
+                sys.exit(f"{key} must be a gain 0-5 (1/s)")
     if "syslog_port" in vals and not (vals["syslog_port"].isdigit() and 0 < int(vals["syslog_port"]) < 65536):
         sys.exit("syslog_port must be 1-65535")
     if "imu_level" in vals:

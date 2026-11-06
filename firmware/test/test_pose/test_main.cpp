@@ -132,6 +132,35 @@ static void test_rest_eases_the_pose_and_rates_hold() {
     TEST_ASSERT_TRUE(r.pose_settled());
 }
 
+// TiltHold against the robot's measured sag (the body reaches 70 % of a commanded tilt, after the
+// pose's own rate): the measured tilt comes to the commanded one, holds still once there (so the
+// pose settles), never trims past its cap, and lets go while walking.
+static void test_tilt_hold_closes_the_sag() {
+    SimRobot r;
+    TEST_ASSERT_TRUE(r.init());
+    TiltHold th;
+    r.set_pose({0, 0, 0, 0.1745f, -0.1396f, 0});  // roll 10, pitch -8 deg
+    float t = 0;
+    for (int i = 0; i < 400; ++i, t += kDt) {  // 8 s
+        const float mr = 0.7f * r.pose().roll, mp = 0.7f * r.pose().pitch;  // the sagging body, as measured
+        if (th.update(r.pose_target().roll, r.pose_target().pitch, mr, mp, true, kDt)) r.set_tilt_trim(th.roll(), th.pitch());
+        TEST_ASSERT_EQUAL(0, r.step(kDt, t).unreachable);
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.006f, 0.1745f, 0.7f * r.pose().roll);
+    TEST_ASSERT_FLOAT_WITHIN(0.006f, -0.1396f, 0.7f * r.pose().pitch);
+    TEST_ASSERT_TRUE(r.pose_settled());  // inside the dead band: still
+    // A target the sag cannot reach within the cap: the trim stops at 8 deg.
+    r.set_pose({0, 0, 0, 0.2618f, 0, 0});
+    for (int i = 0; i < 600; ++i, t += kDt) {
+        if (th.update(r.pose_target().roll, 0, 0.5f * r.pose().roll, 0, true, kDt)) r.set_tilt_trim(th.roll(), th.pitch());
+        r.step(kDt, t);
+    }
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, TiltHoldParams().max_trim, th.roll());
+    // Walking (not active): the trims go.
+    TEST_ASSERT_TRUE(th.update(0.2f, 0, 0, 0, false, kDt));
+    TEST_ASSERT_EQUAL_FLOAT(0, th.roll());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_pose_transform_round_trips);
@@ -139,5 +168,6 @@ int main() {
     RUN_TEST(test_each_axis_reaches_its_limit);
     RUN_TEST(test_every_corner_walking);
     RUN_TEST(test_rest_eases_the_pose_and_rates_hold);
+    RUN_TEST(test_tilt_hold_closes_the_sag);
     return UNITY_END();
 }

@@ -70,6 +70,7 @@ firmware (`tools/make_nvs.py <settings file> <out.bin>`, flashed at 0x9000; OTA 
 | `idle_s` | seconds without a command that moves before the robot lies down (Gait, below), 0-3600; default 30; `0`: never |
 | `low_bat_mv` | the final shutdown's battery floor (Shutdown, below) in mV, 5600-8000; default 6400 (3.2 V a cell); `0`: never |
 | `syslog_ip`, `syslog_port` | the UDP syslog sink (Syslog, below); port default 5140; none: no syslog |
+| `tilt_hold` | body tilt feedback gain while standing (Tilt hold, below), 1/s, 0-5; default 1.5; `0`: off |
 | `yaw_hold` | heading hold / turn-rate feedback gain (Gait, below), 1/s, 0-5; default 1.0; `0`: off |
 | `imu_level` | `roll,pitch` in degrees (each within ±10): how the IMU sits on its board, read with the body level (a level on the top plate) from the console's `imu`. Every IMU sample is turned into the body frame with it; none: the board is taken as level |
 
@@ -80,7 +81,7 @@ firmware replaces it.
 **Over Wi-Fi, without USB**, `tools/push_settings.py <board IP> <settings file> <password file>` changes
 settings on a board that has OTA. The file has the same lines, only the keys to change; the others stay. An
 empty value (`trims=`) removes a key that has a default (`app`, `sim`, `port`, `trims`, `imu_level`,
-`idle_s`, `low_bat_mv`, `syslog_ip`, `syslog_port`, `yaw_hold`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
+`idle_s`, `low_bat_mv`, `syslog_ip`, `syslog_port`, `yaw_hold`, `tilt_hold`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
 line) and its MD5 check, into the unused `spiffs` partition. The board reboots, and the robot stands in its
 boot pose. Before anything reads NVS, the board checks every line (`lib/hexa_settings`, the rules of
 `make_nvs.py`). It writes the keys only if all pass, then erases the upload, so the upload is applied once.
@@ -208,6 +209,14 @@ kept (every corner is reachable at top speed). Lying down eases it out and stand
 command counts as use (the idle timer starts again) and stands a resting robot up. It is not
 locomotion: odometry does not see it, and the gyro's bias is learned only while it is still. `info` and the
 `health` line show it.
+
+**Tilt hold.** On the robot the body reached ~70 % of a commanded roll or pitch: the legs and servos give under
+the load. Standing (real IMU only), the integral of (commanded - measured) roll and pitch, measured by the AHRS
+against gravity, is added to the pose's roll and pitch: `tilt_hold` (NVS, default 1.5 /s; `0`: off), at most 8°
+each, within the pose limits and the reach gate; inside 0.3° of the target it holds still, so the pose settles.
+So a pose's roll and pitch are relative to gravity: a neutral pose is a level body, on a slope or straddling a
+step. Walking, lying down or shutting down resets it. The simulated IMU does not feel a body pose, so sim mode has
+none. The `health` line shows the trims.
 
 **Sonar lights.** In real mode the ultrasonic is read at 10 Hz with or without an agent, and its two lights show
 what it sees: blue clear, yellow under 0.40 m, red under 0.20 m (20 mm of hysteresis), each change logged;

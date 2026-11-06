@@ -183,6 +183,10 @@ uint32_t idle_s = 30;
 // Heading hold / turn-rate feedback (hexa_gait.h YawHold) from the bias-corrected gyro, sim or
 // real; NVS "yaw_hold" (gain 1/s, default 1.0; 0 off).
 YawHold yaw_hold;
+// Tilt feedback (hexa_world.h TiltHold): standing, the AHRS's roll and pitch against the pose's; real
+// IMU only (the simulated one does not feel a body pose, and the simulated servos do not sag); NVS
+// "tilt_hold" (gain 1/s, default 1.5; 0 off).
+TiltHold tilt_hold;
 float last_move_s = 0;
 
 // The final shutdown: lying down once it is asked for (its reason), then deep sleep. Nothing
@@ -231,6 +235,14 @@ void robot_tick(float now_s) {
     // The last tick's gyro sample against what the gait is asked to turn.
     const bool walking = !robot.gait().standing() && robot.rest_level() == 0 && (sim_mode || real_imu);
     robot.set_yaw_trim(yaw_hold.update(robot.gait().commanded().wz, imu_sample.gz, walking, kTickS));
+    {
+        const Quat& q = ahrs.q();
+        const float mr = std::atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y));
+        const float mp = std::asin(std::fmax(-1.0f, std::fmin(1.0f, 2 * (q.w * q.y - q.z * q.x))));
+        const bool still = real_imu && ahrs.seeded() && robot.gait().standing() && robot.rest_level() == 0 && !shutdown_why;
+        if (tilt_hold.update(robot.pose_target().roll, robot.pose_target().pitch, mr, mp, still, kTickS))
+            robot.set_tilt_trim(tilt_hold.roll(), tilt_hold.pitch());
+    }
     unreachable += robot.step(kTickS, now_s).unreachable;
     if (sim_mode) {
         imu_sample = sim_imu.step(kTickS, robot.truth_twist());
@@ -707,12 +719,13 @@ void base_loop() {
         last_report = t_start;
         hexa_log::log(hexa_log::kInfo,
                       "health: battery %d mV  rssi %d dBm  sessions %u  loop max %u ms  late ticks %u  gait %s  "
-                      "cycle %.2f s  yaw lost %+.3f rad  pose %+.0f/%+.0f/%+.0f deg %+.0f mm  sonar %.2f m  unreachable %u",
+                      "cycle %.2f s  yaw lost %+.3f rad  pose %+.0f/%+.0f/%+.0f deg %+.0f mm  tilt trim %+.1f/%+.1f  sonar %.2f m  unreachable %u",
                       battery_mv, static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(sessions),
                       static_cast<unsigned>(loop_max_ms), static_cast<unsigned>(late_ticks),
                       robot.resting() ? "lying" : robot.rest_level() > 0 ? "between" : robot.gait().standing() ? "standing" : "walking",
                       robot.gait().period(), yaw_hold.error(), robot.pose().roll * RAD_TO_DEG,
-                      robot.pose().pitch * RAD_TO_DEG, robot.pose().yaw * RAD_TO_DEG, robot.pose().z * 1000, sonar_msg.range, static_cast<unsigned>(unreachable));
+                      robot.pose().pitch * RAD_TO_DEG, robot.pose().yaw * RAD_TO_DEG, robot.pose().z * 1000,
+                      tilt_hold.roll() * RAD_TO_DEG, tilt_hold.pitch() * RAD_TO_DEG, sonar_msg.range, static_cast<unsigned>(unreachable));
         loop_max_ms = late_ticks = 0;
     }
     agent_step();
@@ -790,7 +803,9 @@ void console_info() {
     Serial.printf("gait period %.2f-%.2f s (in use %.2f)  duty %.2f  lift %.3f m  max stride %.3f m%s\n", gp.period_s,
                   gp.max_period_s, robot.gait().period(), gp.duty, gp.lift, gp.max_stride,
                   gait_pending ? "  (new ones pending: applied when it stands)" : "");
-    Serial.printf("yaw hold gain %.2f /s (0: off)\n", yaw_hold.params().gain);
+    Serial.printf("yaw hold gain %.2f /s (0: off)  tilt hold gain %.2f /s, trim roll %+.1f pitch %+.1f deg\n",
+                  yaw_hold.params().gain, tilt_hold.params().gain, tilt_hold.roll() * RAD_TO_DEG,
+                  tilt_hold.pitch() * RAD_TO_DEG);
     const BodyPose& bp = robot.pose();
     Serial.printf("body pose roll %+.1f pitch %+.1f yaw %+.1f deg  x %+.0f y %+.0f z %+.0f mm%s\n", bp.roll * RAD_TO_DEG,
                   bp.pitch * RAD_TO_DEG, bp.yaw * RAD_TO_DEG, bp.x * 1000, bp.y * 1000, bp.z * 1000,
@@ -984,6 +999,12 @@ void setup() {
     if (!idle_str.isEmpty()) {
         if (parse_int(idle_str, &idle) && idle >= 0 && idle <= 3600) idle_s = static_cast<uint32_t>(idle);
         else Serial.println("idle_s: NVS value refused, 30 s used");
+    }
+    const String tilt_str = prefs.getString("tilt_hold", "");
+    if (!tilt_str.isEmpty()) {
+        const float g = tilt_str.toFloat();
+        if (g >= 0 && g <= 5) tilt_hold.set_gain(g);
+        else Serial.println("tilt_hold: NVS value refused, 1.5 used");
     }
     const String yaw_str = prefs.getString("yaw_hold", "");
     if (!yaw_str.isEmpty()) {

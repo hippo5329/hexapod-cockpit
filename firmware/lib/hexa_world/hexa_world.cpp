@@ -157,7 +157,10 @@ StepCounts SimRobot::step(float dt, float now_s) {
     // far as the feet fit, and is eased out while lying down (the rest pose is a neutral body's).
     const PoseLimits lim;
     const float ds = lim.speed * dt, da = lim.turn * dt, w = gait_.standing() ? 1.0f : lim.walking;
-    const BodyPose& t = pose_target_;
+    BodyPose t = pose_target_;
+    t.roll += tilt_roll_;
+    t.pitch += tilt_pitch_;
+    t = clamp_pose(t, lim);
     const BodyPose next = {approach(pose_.x, t.x * w, ds),        approach(pose_.y, t.y * w, ds),
                            approach(pose_.z, t.z * w, ds),        approach(pose_.roll, t.roll * w, da),
                            approach(pose_.pitch, t.pitch * w, da), approach(pose_.yaw, t.yaw * w, da)};
