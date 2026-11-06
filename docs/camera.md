@@ -34,7 +34,7 @@ HTTP:
 | `:81/stream` | MJPEG (`multipart/x-mixed-replace`), each part with `Content-Length` and `X-Timestamp` (capture time, µs since the board's boot), paced to `fps`; one client at a time |
 | `:80/capture` | one JPEG |
 | `:80/status` | JSON: sensor, settings, the stream's measured rate and bandwidth, clients, RSSI, memory |
-| `:80/control?vflip=0\|1&hmirror=0\|1` | flip the image for the mount: applied at once and kept in NVS (no USB needed); replies with the status |
+| `:80/control?vflip=0\|1&hmirror=0\|1&fps=1-30&frame=<size>` | flip the image for the mount and pace the stream (applied at once), set the frame size (reboots: the buffers are sized at init); all kept in NVS (no USB needed); replies with the status. On the robot `fps=5`: the vision node uses 5, and the servos' load cuts the link to ~130-270 kbit/s (2026-11-06) |
 
 The stream has its own server: a stream holds its handler for as long as the client reads. Modem sleep is
 off (it adds 100+ ms to a frame). The log (syslog and the USB console): `boot`, the networks heard and every

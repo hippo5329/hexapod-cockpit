@@ -5,7 +5,7 @@
 //   http://<ip>:81/stream    MJPEG (multipart/x-mixed-replace), paced to the `fps` setting; one client
 //   http://<ip>/capture      one JPEG
 //   http://<ip>/status       JSON: settings, measured rate and size, Wi-Fi, memory
-//   http://<ip>/control      ?vflip=0|1&hmirror=0|1&frame=<size>: kept in NVS (a new size reboots)
+//   http://<ip>/control      ?vflip=0|1&hmirror=0|1&fps=1-30&frame=<size>: kept in NVS (a new size reboots)
 //
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
 // (OTA on 3232, none: no OTA), name (hostname, default hexacam), frame (qqvga, qvga, vga, svga, xga, hd;
@@ -111,10 +111,10 @@ esp_err_t stream_handler(httpd_req_t* req) {
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     ++stream_clients;
     hexa_log::log(hexa_log::kInfo, "stream: client up (%u)", static_cast<unsigned>(stream_clients));
-    const uint32_t period_ms = 1000 / fps;
     uint32_t next = millis();
     esp_err_t r = ESP_OK;
     while (r == ESP_OK) {
+        const uint32_t period_ms = 1000 / fps;  // each frame: /control may change it mid-stream
         const int32_t wait = static_cast<int32_t>(next - millis());
         if (wait > 0) delay(wait);
         next += period_ms;
@@ -171,10 +171,10 @@ esp_err_t status_handler(httpd_req_t* req) {
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
 
-// /control?vflip=0|1&hmirror=0|1&frame=<size>: flip the image for the mount (at once) and set the frame
-// size, all kept in NVS (a mount change needs no USB). The frame buffers are sized at camera init, so a
-// new frame size reboots the board after the reply. Every value is checked before any is applied; the
-// reply is /status.
+// /control?vflip=0|1&hmirror=0|1&fps=1-30&frame=<size>: flip the image for the mount and pace the stream
+// (both at once) and set the frame size, all kept in NVS (a mount change needs no USB). The frame
+// buffers are sized at camera init, so a new frame size reboots the board after the reply. Every value
+// is checked before any is applied; the reply is /status.
 uint32_t restart_at = 0;
 
 esp_err_t control_handler(httpd_req_t* req) {
@@ -182,6 +182,7 @@ esp_err_t control_handler(httpd_req_t* req) {
     bool* const flags[] = {&vflip, &hmirror};
     char q[96], v[2][2] = {}, fv[8] = {};
     bool given[2] = {}, frame_given = false;
+    int new_fps = 0;
     const Frame* new_frame = nullptr;
     if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
         for (int i = 0; i < 2; i++) {
@@ -194,6 +195,16 @@ esp_err_t control_handler(httpd_req_t* req) {
             given[i] = true;
             v[i][0] = val[0];
         }
+        char f[8];
+        if (httpd_query_key_value(q, "fps", f, sizeof f) == ESP_OK) {
+            char* end = nullptr;
+            const long n = strtol(f, &end, 10);
+            if (end == f || *end || n < 1 || n > 30) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "fps takes 1 to 30");
+                return ESP_FAIL;
+            }
+            new_fps = static_cast<int>(n);
+        }
         if (httpd_query_key_value(q, "frame", fv, sizeof fv) == ESP_OK) {
             frame_given = true;
             for (const Frame& k : kFrames)
@@ -204,8 +215,8 @@ esp_err_t control_handler(httpd_req_t* req) {
             }
         }
     }
-    if (!given[0] && !given[1] && !frame_given) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "usage: /control?vflip=0|1&hmirror=0|1&frame=<size>");
+    if (!given[0] && !given[1] && !frame_given && !new_fps) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&frame=<size>");
         return ESP_FAIL;
     }
     Preferences w;
@@ -217,13 +228,17 @@ esp_err_t control_handler(httpd_req_t* req) {
         w.putString(keys[i], v[i]);
     }
     if (new_frame) w.putString("frame", new_frame->name);
+    if (new_fps) {
+        fps = new_fps;
+        w.putString("fps", String(new_fps));
+    }
     w.end();
     if (s) {
         s->set_vflip(s, vflip);
         s->set_hmirror(s, hmirror);
     }
     const bool reboot = new_frame && new_frame->size != frame;
-    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d frame %s (kept)%s", vflip, hmirror,
+    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d fps %d frame %s (kept)%s", vflip, hmirror, fps,
                   new_frame ? new_frame->name : frame_name(frame), reboot ? ", rebooting for the frame size" : "");
     const esp_err_t r = status_handler(req);
     if (reboot) restart_at = millis() + 500;
