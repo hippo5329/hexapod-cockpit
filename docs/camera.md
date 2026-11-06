@@ -62,3 +62,27 @@ raw (above) and `ros2 run camera_calibration cameracalibrator --size 8x6 --squar
 `config/hexacam1_qvga.yaml` (this robot, 320x240: fx 287.9 fy 285.8, cx 160.7 cy 131.7, k1 -0.111,
 rms 0.37 px over 32 views). A calibration holds for its frame size only: at another size the bridge
 warns and falls back to the nominal pinhole.
+
+## Vision (`camera_vision`)
+
+`ros2 run hexapod_bringup camera_vision --ros-args -p model_path:=<nanodet.onnx> -p depth_model_path:=<depth.onnx>`
+reads the bridge's images, `camera_info` and `imu/data` and publishes `camera/detections`
+(`vision_msgs/Detection2DArray`), `camera/vision` (JSON: objects with position and distance, and the free
+floor ahead, left and right) and `camera/vision/image/compressed` (boxes, distances, obstacles tinted red).
+The models are not in the repo:
+
+- objects: NanoDet-Plus-m 416 from opencv_zoo (Apache-2.0),
+  `https://huggingface.co/opencv/object_detection_nanodet/resolve/main/object_detection_nanodet_2022nov.onnx`
+  (3.8 MB; COCO's 80 classes; OpenCV's dnn, ~30 ms on 4 cores)
+- depth: Depth Anything V2 Small (Apache-2.0; the Base and Large models are not),
+  `https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx` (99 MB;
+  onnxruntime, `pip install onnxruntime`; ~55 ms at 266x266 on 4 threads)
+
+How far: the depth model's relative inverse depth is fitted to the floor, whose depth the geometry gives
+(calibration, camera height, IMU tilt plus `mount_pitch_deg`); a point more than 3.5 cm above the floor
+is an obstacle. Measured (2026-11-06): the checkerboard at 0.5 and 1.0 m within 5 %; walking, the
+obstacle ahead agreed with the sonar within 2-5 cm under 0.7 m (0.513/0.508, 0.474/0.450, 0.507/0.505,
+0.669/0.691 m). Beyond ~1.5 m it reads short (a closet 2.6 m away by sonar: 1.5-2.1 m): there 1 deg of
+tilt is 0.5 m. The colour of the floor alone cannot separate it from white doors (Lab within 4), hence
+the depth. The class names are COCO's: white closet doors come out as "refrigerator", furniture as
+"chair", "bed" or "oven"; the obstacles do not depend on them.
