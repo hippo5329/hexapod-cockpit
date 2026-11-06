@@ -176,6 +176,12 @@ public:
     const TripodGait& gait() const { return gait_; }
     const GaitParams& gait_params() const { return gp_; }
     bool foot_down(int leg) const { return contact_[leg]; }
+    // Static stability: how far the centre of mass is inside the support polygon (the convex hull
+    // of the feet on the ground), metres; negative: outside (the robot would tip), -1 with fewer
+    // than three feet down. The centre of mass is the body's origin plus set_com()'s offset
+    // (body frame; the real one is unmeasured: the battery and the camera move it).
+    float margin() const { return margin_; }
+    void set_com(float x, float y) { com_x_ = x; com_y_ = y; }
 
     // Both poses back to the origin (the robot stays where its feet are).
     void reset_poses() { truth_ = Pose2(); odom_ = Pose2(); }
@@ -203,6 +209,7 @@ private:
     bool feet_fit(const BodyPose& applied, float rest) const;
     Vec3 foot_target(int leg, float rest) const;
     bool rest_want_ = false;
+    float margin_ = 0, com_x_ = 0, com_y_ = 0;
     float rest_s_ = 0;
 };
 

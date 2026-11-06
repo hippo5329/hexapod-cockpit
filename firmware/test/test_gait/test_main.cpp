@@ -262,6 +262,134 @@ static void test_params_only_while_standing() {
     TEST_ASSERT_EQUAL_FLOAT(1.2f, g.params().period_s);
 }
 
+// Quadruped: the body's centre (origin, body frame) inside the triangle of three feet down: the least
+// distance to its edges; 1 with four down (the rectangle's margin is far larger), -1 with fewer than three.
+static float quad_margin(const TripodGait& g) {
+    const int corners[4] = {0, 2, 3, 5};
+    Vec3 p[4];
+    int n = 0;
+    for (int leg : corners)
+        if (g.foot(leg).z <= minihexa_geometry().stand_z + 1e-6f) p[n++] = g.foot(leg);
+    if (n == 4) return 1;
+    if (n < 3) return -1;
+    float m = 1;
+    for (int e = 0; e < 3; ++e) {
+        const Vec3 &a = p[e], &b = p[(e + 1) % 3], &c = p[(e + 2) % 3];
+        float nx = -(b.y - a.y), ny = b.x - a.x;
+        const float len = std::sqrt(nx * nx + ny * ny);
+        nx /= len;
+        ny /= len;
+        if (nx * (c.x - a.x) + ny * (c.y - a.y) < 0) {
+            nx = -nx;
+            ny = -ny;
+        }
+        m = std::fmin(m, -(nx * a.x + ny * a.y));  // n.(0 - a)
+    }
+    return m;
+}
+
+// Quadruped at its top speed in eight directions and both turns: the middle feet stay up, three
+// corner feet or more are down, every foot reachable with no pulse clamped, and the sway keeps the
+// body's centre inside the triangle of the feet down (most of the margin: the sway is rate-limited).
+static void test_quad_stable_and_reachable() {
+    const Geometry& g = minihexa_geometry();
+    const GaitParams qp = quad_gait_params();
+    const BodyTwist cmds[] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},  {0, -1, 0}, {1, 1, 0},
+                              {1, -1, 0}, {0, 0, 3},  {0, 0, -3}, {1, 0, 2},  {-1, 1, -2}};
+    float worst = 1;
+    for (const BodyTwist& c : cmds) {
+        TripodGait q;
+        q.init(&g, qp);
+        float t = 0;
+        for (float s = 0; s < 8.0f; s += kDt, t += kDt) {
+            q.command(c, t);
+            q.step(kDt, t);
+            for (int leg : {1, 4}) TEST_ASSERT_FLOAT_WITHIN(1e-6f, g.stand_z + qp.mid_lift, q.foot(leg).z);
+            int down = 0;
+            for (int leg : {0, 2, 3, 5}) down += q.foot(leg).z <= g.stand_z + 1e-6f;
+            TEST_ASSERT_TRUE(down >= 3);
+            worst = std::fmin(worst, quad_margin(q));
+            for (int leg = 0; leg < kLegs; ++leg) {
+                LegAngles a;
+                TEST_ASSERT_TRUE_MESSAGE(leg_ik(g, leg, q.foot(leg), &a), "foot out of reach");
+                const float ang[3] = {a.coxa, a.femur, a.tibia};
+                for (int j = 0; j < 3; ++j) {
+                    bool clamped = false;
+                    angle_to_us(default_cal(leg * 3 + j), ang[j], &clamped);
+                    TEST_ASSERT_FALSE_MESSAGE(clamped, "pulse clamped");
+                }
+            }
+        }
+    }
+    std::printf("quad: least margin %.1f mm (target %.1f)\n", worst * 1000, qp.margin * 1000);
+    TEST_ASSERT_TRUE(worst >= 0.75f * qp.margin);
+}
+
+// Quadruped released mid-stride: stands within two slow cycles on its own (no backstop), corner
+// feet on neutral, middle feet up, no sway.
+static void test_quad_stop_settles() {
+    const Geometry& g = minihexa_geometry();
+    const GaitParams qp = quad_gait_params();
+    for (float run : {1.3f, 3.1f, 4.4f, 6.0f}) {
+        TripodGait q;
+        q.init(&g, qp);
+        float t = 0;
+        for (float s = 0; s < run; s += kDt, t += kDt) {
+            q.command({0.02f, 0.01f, 0.1f}, t);
+            q.step(kDt, t);
+        }
+        TEST_ASSERT_FALSE(q.standing());
+        q.command({0, 0, 0}, t);
+        float waited = 0;
+        while (!q.standing() && waited < 2 * qp.max_period_s) {
+            q.step(kDt, t);
+            t += kDt;
+            waited += kDt;
+        }
+        TEST_ASSERT_TRUE(q.standing());
+        TEST_ASSERT_EQUAL_INT(0, q.forced_stands());
+        TEST_ASSERT_EQUAL_FLOAT(0, q.sway_x());
+        TEST_ASSERT_EQUAL_FLOAT(0, q.sway_y());
+        for (int leg : {0, 2, 3, 5}) {
+            const Vec3 n = neutral_foot(g, leg);
+            TEST_ASSERT_FLOAT_WITHIN(1e-3f, n.x, q.foot(leg).x);
+            TEST_ASSERT_FLOAT_WITHIN(1e-3f, n.y, q.foot(leg).y);
+            TEST_ASSERT_FLOAT_WITHIN(1e-6f, n.z, q.foot(leg).z);
+        }
+        TEST_ASSERT_TRUE(q.mids_home());
+    }
+}
+
+// Tripod -> quadruped while standing: the middle feet rise first (walking waits), then it walks;
+// a quadruped duty of 0.75 or less is refused (no four-feet gap for the sway across).
+static void test_quad_switch_and_params() {
+    const Geometry& g = minihexa_geometry();
+    TripodGait q;
+    q.init(&g, GaitParams());
+    TEST_ASSERT_TRUE(q.set_params(quad_gait_params()));
+    TEST_ASSERT_FALSE(q.mids_home());
+    float t = 0;
+    for (int i = 0; i < 10; ++i, t += kDt) {
+        q.command({0.02f, 0, 0}, t);
+        q.step(kDt, t);
+        TEST_ASSERT_TRUE(q.standing());  // the middle feet still on their way up
+    }
+    for (int i = 0; i < 200 && !q.mids_home(); ++i, t += kDt) q.step(kDt, t);
+    TEST_ASSERT_TRUE(q.mids_home());
+    for (int i = 0; i < 50; ++i, t += kDt) {
+        q.command({0.02f, 0, 0}, t);
+        q.step(kDt, t);
+    }
+    TEST_ASSERT_FALSE(q.standing());
+    GaitParams bad = quad_gait_params();
+    bad.duty = 0.75f;
+    TEST_ASSERT_FALSE(TripodGait::params_valid(bad));
+    bad = quad_gait_params();
+    bad.mid_lift = 0.06f;
+    TEST_ASSERT_FALSE(TripodGait::params_valid(bad));
+    TEST_ASSERT_TRUE(TripodGait::params_valid(quad_gait_params()));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_starts_standing);
@@ -274,5 +402,8 @@ int main() {
     RUN_TEST(test_yaw_hold_holds_heading_and_turn_rate);
     RUN_TEST(test_command_timeout_stands);
     RUN_TEST(test_params_only_while_standing);
+    RUN_TEST(test_quad_stable_and_reachable);
+    RUN_TEST(test_quad_stop_settles);
+    RUN_TEST(test_quad_switch_and_params);
     return UNITY_END();
 }

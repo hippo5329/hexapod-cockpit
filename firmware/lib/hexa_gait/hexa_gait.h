@@ -1,6 +1,13 @@
 // Tripod gait: body velocity in, foot positions out. Plain C++, shared by the
 // firmware, the tests and the simulator.
 //
+// Quadruped mode (GaitParams::quad, quad_gait_params()): the middle legs held up, the four corner
+// legs crawl one at a time (lr, lf, then rr, rf), so three feet are always down. Three corner feet
+// make a triangle whose long edge runs through the body's centre: before each lift the body sways
+// away from that leg until its centre is `margin` inside the triangle of the feet that stay down.
+// The two sides need opposite sways, so the sway across happens while all four feet are down
+// (the gap after each side's two steps).
+//
 // Legs rf, rr, lm form tripod A and rm, lr, lf tripod B; each spends `duty` of the
 // cycle on the ground. A stance foot moves against the commanded body twist; a swing
 // foot lifts and flies to where it must land so that the next stance is centred on
@@ -29,7 +36,24 @@ struct GaitParams {
     // command that moves no foot faster than min_foot_speed is zero: no stepping on the spot.
     float max_period_s = 3.0f;
     float min_foot_speed = 0.002f;  // m/s
+    // Quadruped mode (see the top of this file); the rest of these only count with quad set.
+    bool quad = false;
+    float mid_lift = 0.040f;    // the raised middle feet: this far above the stance floor
+    float mid_reach = 0.060f;   // and this far out from the coxa axis
+    float margin = 0.012f;      // the body's centre this far inside the support triangle
+    float sway_speed = 0.080f;  // m/s, the body's sway rate
+    float mid_speed = 0.040f;   // m/s, the middle feet going up or down (standing only)
+    // The centre of mass off the body's origin (body frame, m): the sway places it, not the origin.
+    // Unmeasured: the sim shows 10 mm unaccounted for costs about 5 mm of margin.
+    float com_x = 0.0f, com_y = 0.0f;
 };
+
+// The quadruped crawl's defaults (sim/hexa_sim --quad, 2026-11-06): a 0.88 duty leaves 0.26 of the
+// cycle with four feet down after each side's two steps for the sway across (2 x margin / 0.79 of
+// travel, 51 mm at 0.12 m/s); a 45 mm stride keeps a strafing foot in reach with the sway on top.
+// Every scenario then holds the centre of mass 18.5 mm or more inside the feet down. Top speed
+// max_stride / (duty * period) = 20 mm/s.
+GaitParams quad_gait_params();
 
 struct BodyTwist {
     float vx, vy, wz;  // m/s, m/s, rad/s, body frame
@@ -89,7 +113,15 @@ public:
     // Advance by dt. `now_s` drives the command timeout.
     void step(float dt, float now_s);
 
-    const Vec3& foot(int leg) const { return foot_[leg]; }
+    // Where the foot goes, body frame: the gait's stance and swing, less the body's sway.
+    Vec3 foot(int leg) const;
+    // The legs that walk (quadruped: not the middle two).
+    bool walks(int leg) const { return !p_.quad || (leg != 1 && leg != 4); }
+    // The body's sway (quadruped), body frame: the centre of mass over the feet is here.
+    float sway_x() const { return sway_x_; }
+    float sway_y() const { return sway_y_; }
+    // The middle feet at their place for the mode (up for quad, neutral for tripod).
+    bool mids_home() const;
     bool in_stance(int leg) const;
     bool standing() const { return standing_; }
     // Stops that never settled and were put down by the backstop (step()): each one is a fault.
@@ -112,6 +144,10 @@ public:
 
 private:
     float leg_phase(int leg) const;
+    float offset(int leg) const;
+    float start_phase() const;
+    Vec3 home(int leg) const;  // neutral, or raised for a quad's middle leg
+    void sway(float dt);
     BodyTwist clamp(const BodyTwist& c) const;
     float worst_foot_speed(const BodyTwist& c) const;
     bool settled() const;
@@ -130,6 +166,7 @@ private:
     int forced_stands_ = 0;
     bool was_stance_[kLegs];
     Vec3 foot_[kLegs];
+    float sway_x_ = 0, sway_y_ = 0;
     Vec3 swing_from_[kLegs];
     Vec3 landing_[kLegs];
 };

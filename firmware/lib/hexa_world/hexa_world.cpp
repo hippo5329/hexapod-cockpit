@@ -64,6 +64,44 @@ Vec3 rotate(const BodyPose& p, const Vec3& v, bool inverse) {
 }
 
 float approach(float v, float to, float step) { return v < to ? std::fmin(to, v + step) : std::fmax(to, v - step); }
+
+// Signed distance of (px, py) inside the convex hull of the contact feet (x, y): the least over the
+// hull's edges; -1 with fewer than three feet down.
+float support_margin(const Vec3* feet, const bool* contact, float px, float py) {
+    Vec3 p[kLegs];
+    int n = 0;
+    for (int i = 0; i < kLegs; ++i)
+        if (contact[i]) p[n++] = feet[i];
+    if (n < 3) return -1;
+    // Monotone chain, counter-clockwise.
+    for (int i = 1; i < n; ++i)
+        for (int j = i; j > 0 && (p[j].x < p[j - 1].x || (p[j].x == p[j - 1].x && p[j].y < p[j - 1].y)); --j) {
+            const Vec3 t = p[j]; p[j] = p[j - 1]; p[j - 1] = t;
+        }
+    auto cross = [](const Vec3& o, const Vec3& a, const Vec3& b) {
+        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    };
+    Vec3 h[2 * kLegs];
+    int k = 0;
+    for (int i = 0; i < n; ++i) {
+        while (k >= 2 && cross(h[k - 2], h[k - 1], p[i]) <= 0) --k;
+        h[k++] = p[i];
+    }
+    for (int i = n - 2, lo = k + 1; i >= 0; --i) {
+        while (k >= lo && cross(h[k - 2], h[k - 1], p[i]) <= 0) --k;
+        h[k++] = p[i];
+    }
+    --k;  // the last point is the first
+    if (k < 3) return -1;  // the feet in a line
+    float m = 1e9f;
+    for (int i = 0; i < k; ++i) {
+        const Vec3& a = h[i];
+        const Vec3& b = h[(i + 1) % k];
+        const float ex = b.x - a.x, ey = b.y - a.y, len = std::sqrt(ex * ex + ey * ey);
+        m = std::fmin(m, (ex * (py - a.y) - ey * (px - a.x)) / len);  // left of a->b is inside
+    }
+    return m;
+}
 }  // namespace
 
 Vec3 to_posed_body(const BodyPose& p, const Vec3& f) { return rotate(p, {f.x - p.x, f.y - p.y, f.z - p.z}, true); }
@@ -202,6 +240,11 @@ StepCounts SimRobot::step(float dt, float now_s) {
     bool contact[kLegs], both[kLegs];
     actual_feet(feet, contact);  // in the stance frame (the pose undone)
     for (int i = 0; i < kLegs; ++i) both[i] = contact[i] && contact_[i];
+    // The centre of mass in the stance frame: the posed body's origin plus the offset.
+    {
+        const Vec3 com = from_posed_body(pose_applied_, {com_x_, com_y_, 0});
+        margin_ = support_margin(feet, contact, com.x, com.y);
+    }
     double dx = 0, dy = 0, dyaw = 0;
     if (rigid_2d(feet_, feet, both, &dx, &dy, &dyaw)) {
         dx *= 1 - slip_; dy *= 1 - slip_; dyaw *= 1 - slip_;

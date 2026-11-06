@@ -11,6 +11,8 @@ Three ways to run the miniHexa without the robot. All use the firmware's own gai
 ```
 make -C sim run                          # every scenario, exit 0 on PASS
 sim/hexa_sim --slip 0.10 --csv walk.csv  # another slip, a trace per tick
+sim/hexa_sim --quad                      # the quadruped crawl (below)
+sim/hexa_sim --quad --com -10,0 --set margin=0.015   # centre of mass 10 mm back; a gait override
 ```
 
 Each 20 ms tick follows the same path as the firmware:
@@ -40,6 +42,37 @@ A scenario passes when:
 With no slip, the true motion matches the command within about 1 mm and 1° over 0.3 m and 137°. That shows the
 IK, FK and gait are consistent with each other.
 
+
+A scenario also fails when the centre of mass comes within 5 mm of the edge of the support polygon (the
+convex hull of the feet on the ground), or leaves it. The gait is slow enough that static stability is what
+counts. The centre of mass is the body's origin unless `--com x_mm,y_mm` moves it. The real one is unmeasured.
+
+### Quadruped crawl (`--quad`)
+
+The middle legs are held up, 40 mm above the stance floor and 60 mm out. The four corner legs step one at a
+time: left rear, left front, then right rear, right front (`quad_gait_params()` in `firmware/lib/hexa_gait`).
+Three corner feet make a triangle whose long edge runs through the body's centre, so lifting a leg with the
+body centred leaves no margin at all. Before each lift the body sways away from that leg until its centre of
+mass is `margin` inside the triangle of the feet that stay down. The two sides need opposite sways, so the
+sway across happens while all four feet are down: a duty above 0.75 leaves that gap after each side's two
+steps. Walking waits for the middle feet: switched from the tripod while standing, they rise first (1.0 s),
+and they come down the same way on the switch back.
+
+The defaults come from a sweep in this simulator (2026-11-06):
+
+| parameter | value | why |
+|---|---|---|
+| duty | 0.88 | a 0.26-cycle four-feet gap for each sway across; at 0.85 the sway arrives late |
+| sway speed | 0.12 m/s | with 0.08 the body reached 13 mm of a 20 mm target |
+| margin | 20 mm | least margin reached in every scenario: 18.5 mm |
+| stride | 45 mm | at 55 mm a strafing foot left its reach, the sway on top of the stride |
+| period | 2.5 s (up to 4.0) | top speed 20 mm/s, against the tripod's 57 |
+
+Every scenario passes at a slip of 0.05, 0.10 and 0.20, and so does `mode_switch`: tripod to quadruped
+standing, a walk, back to six feet, and a tripod walk. The centre of mass is the open question. 10 mm of
+offset that the gait does not know about costs about 5 mm of margin, and 10 mm back with 8 mm to one side
+leaves 6.4 mm. Told the offset (`com_x`, `com_y`), the gait keeps 15–18 mm with the centre of mass up to 20 mm
+off. So the offset has to be measured on the robot before it walks on four.
 
 ### Model figures
 
