@@ -4,7 +4,8 @@
 //
 //   http://<ip>:81/stream    MJPEG (multipart/x-mixed-replace), paced to the `fps` setting; one client
 //   http://<ip>/capture      one JPEG
-//   http://<ip>/status       JSON: settings, measured rate and size, Wi-Fi, memory
+//   http://<ip>/status       JSON: settings, measured rate and size, Wi-Fi (rssi, power save, tx power), memory,
+//                            chip temperature
 //   http://<ip>/control      ?vflip=0|1&hmirror=0|1&fps=1-30&frame=<size>: kept in NVS (a new size reboots)
 //
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
@@ -17,6 +18,7 @@
 #include <WiFi.h>
 #include <esp_camera.h>
 #include <esp_http_server.h>
+#include <esp_wifi.h>
 
 #include "syslog.h"
 
@@ -156,17 +158,23 @@ esp_err_t capture_handler(httpd_req_t* req) {
 float measured_fps = 0, measured_kbps = 0;
 
 esp_err_t status_handler(httpd_req_t* req) {
-    char j[512];
+    char j[640];
     sensor_t* s = cam_ok ? esp_camera_sensor_get() : nullptr;
+    wifi_ps_type_t ps = WIFI_PS_NONE;
+    esp_wifi_get_ps(&ps);
+    int8_t txp = 0;  // 0.25 dBm units
+    esp_wifi_get_max_tx_power(&txp);
     snprintf(j, sizeof j,
              "{\"name\":\"%s\",\"sensor\":\"%s\",\"frame\":\"%s\",\"quality\":%d,\"fps_cap\":%d,\"fps\":%.1f,"
              "\"kbps\":%.0f,\"clients\":%u,\"frames\":%u,\"capture_fails\":%u,\"vflip\":%d,\"hmirror\":%d,"
-             "\"rssi\":%d,\"uptime_s\":%u,\"heap\":%u,\"psram_free\":%u}",
+             "\"rssi\":%d,\"uptime_s\":%u,\"heap\":%u,\"psram_free\":%u,\"temp_c\":%.1f,\"wifi_ps\":%d,"
+             "\"tx_dbm\":%.2f,\"channel\":%d}",
              name.c_str(), sensor_name, frame_name(s ? static_cast<framesize_t>(s->status.framesize) : frame), quality,
              fps, measured_fps, measured_kbps, static_cast<unsigned>(stream_clients),
              static_cast<unsigned>(frames_sent), static_cast<unsigned>(capture_fails), vflip, hmirror,
              static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(millis() / 1000),
-             static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()));
+             static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()), temperatureRead(),
+             static_cast<int>(ps), txp / 4.0, static_cast<int>(WiFi.channel()));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
@@ -338,10 +346,10 @@ void loop() {
         measured_kbps = (bytes_sent - b0) * 8 / 1000.0f / dt;
         f0 = frames_sent;
         b0 = bytes_sent;
-        hexa_log::log(hexa_log::kInfo, "health: %s rssi %d dBm  stream %u client(s) %.1f fps %.0f kbit/s  fails %u  heap %u psram %u",
+        hexa_log::log(hexa_log::kInfo, "health: %s rssi %d dBm  stream %u client(s) %.1f fps %.0f kbit/s  fails %u  heap %u psram %u  %.1f C",
                       up ? "up" : "DOWN", static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(stream_clients),
                       measured_fps, measured_kbps, static_cast<unsigned>(capture_fails),
-                      static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()));
+                      static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()), temperatureRead());
     }
     delay(5);
 }
