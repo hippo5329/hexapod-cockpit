@@ -34,6 +34,7 @@ HTTP:
 | `:81/stream` | MJPEG (`multipart/x-mixed-replace`), each part with `Content-Length` and `X-Timestamp` (capture time, µs since the board's boot), paced to `fps`; one client at a time |
 | `:80/capture` | one JPEG |
 | `:80/status` | JSON: sensor, settings, the stream's measured rate and bandwidth, clients, RSSI, memory |
+| `:80/control?vflip=0\|1&hmirror=0\|1` | flip the image for the mount: applied at once and kept in NVS (no USB needed); replies with the status |
 
 The stream has its own server: a stream holds its handler for as long as the client reads. Modem sleep is
 off (it adds 100+ ms to a frame). The log (syslog and the USB console): `boot`, the networks heard and every
@@ -52,3 +53,7 @@ Measured on the board: VGA at 24-28 fps from the sensor; on the robot's network 
 pinhole from `hfov_deg` (66) and the JPEG's size. Stamps are the host's receive time less `latency_s`. A lost
 stream is retried every `reconnect_s` (2 s); the rate, bandwidth and reconnects are logged every 10 s. For a
 raw image: `ros2 run image_transport republish compressed raw --ros-args -r in/compressed:=camera/image_raw/compressed -r out:=camera/image_raw`.
+
+Calibration: print `camera/tools/make_checker_pdf.py out.pdf` at 100 % (check the 100 mm bar), glue it flat,
+republish raw (above), then `ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025 --ros-args -r image:=/camera/image_raw -r camera:=/camera`
+(the measured square size in m); save the YAML and pass it as `camera_info_file`.

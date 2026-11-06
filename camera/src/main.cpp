@@ -5,6 +5,7 @@
 //   http://<ip>:81/stream    MJPEG (multipart/x-mixed-replace), paced to the `fps` setting; one client
 //   http://<ip>/capture      one JPEG
 //   http://<ip>/status       JSON: settings, measured rate and size, Wi-Fi, memory
+//   http://<ip>/control      ?vflip=0|1&hmirror=0|1: flip for the mount, applied and kept in NVS
 //
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
 // (OTA on 3232, none: no OTA), name (hostname, default hexacam), frame (qqvga, qvga, vga, svga, xga, hd;
@@ -170,6 +171,46 @@ esp_err_t status_handler(httpd_req_t* req) {
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
 
+// /control?vflip=0|1&hmirror=0|1: flip the image for the mount, at once and kept in NVS (a mount
+// change needs no USB). Every value is checked before any is applied; the reply is /status.
+esp_err_t control_handler(httpd_req_t* req) {
+    const char* const keys[] = {"vflip", "hmirror"};
+    bool* const flags[] = {&vflip, &hmirror};
+    char q[64], v[4][2] = {};
+    bool given[2] = {};
+    if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
+        for (int i = 0; i < 2; i++) {
+            char val[4];
+            if (httpd_query_key_value(q, keys[i], val, sizeof val) != ESP_OK) continue;
+            if (strcmp(val, "0") && strcmp(val, "1")) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "vflip and hmirror take 0 or 1");
+                return ESP_FAIL;
+            }
+            given[i] = true;
+            v[i][0] = val[0];
+        }
+    }
+    if (!given[0] && !given[1]) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "usage: /control?vflip=0|1&hmirror=0|1");
+        return ESP_FAIL;
+    }
+    Preferences w;
+    w.begin("hexacam", false);
+    sensor_t* s = cam_ok ? esp_camera_sensor_get() : nullptr;
+    for (int i = 0; i < 2; i++) {
+        if (!given[i]) continue;
+        *flags[i] = v[i][0] == '1';
+        w.putString(keys[i], v[i]);
+    }
+    w.end();
+    if (s) {
+        s->set_vflip(s, vflip);
+        s->set_hmirror(s, hmirror);
+    }
+    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d (kept)", vflip, hmirror);
+    return status_handler(req);
+}
+
 void http_begin() {
     // Two servers: a stream holds its handler for as long as the client reads, so /status and
     // /capture have their own (the esp32-camera examples do the same, stream on port 81).
@@ -182,6 +223,8 @@ void http_begin() {
         httpd_uri_t cap = {"/capture", HTTP_GET, capture_handler, nullptr};
         httpd_register_uri_handler(ctl, &st);
         httpd_register_uri_handler(ctl, &cap);
+        httpd_uri_t ctrl = {"/control", HTTP_GET, control_handler, nullptr};
+        httpd_register_uri_handler(ctl, &ctrl);
     }
     httpd_config_t sc = HTTPD_DEFAULT_CONFIG();
     sc.server_port = 81;
