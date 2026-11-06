@@ -181,6 +181,15 @@ public:
     // than three feet down. The centre of mass is the body's origin plus set_com()'s offset
     // (body frame; the real one is unmeasured: the battery and the camera move it).
     float margin() const { return margin_; }
+    // The balance probe: one foot moved off its stance spot (stance frame, m: |dx|, |dy| <= 0.02,
+    // 0 <= dz <= 0.03) while the gait stands and the robot is up; it moves there at 20 mm/s and back
+    // the same way. Lifted, the robot stands on the others: a body pose then shows where the centre
+    // of mass tips it. False (nothing changed) when out of range, walking or lying; leg -1: back down.
+    // A command that moves, or the gait stepping, puts it back.
+    bool set_foot_offset(int leg, const Vec3& d);
+    int foot_offset_leg() const { return off_leg_; }
+    // A foot is off its spot or on its way back (the tilt hold waits: it would level the tip away).
+    bool foot_offset_active() const { return off_leg_ >= 0; }
     void set_com(float x, float y) { com_x_ = x; com_y_ = y; }
 
     // Both poses back to the origin (the robot stays where its feet are).
@@ -210,6 +219,8 @@ private:
     Vec3 foot_target(int leg, float rest) const;
     bool rest_want_ = false;
     float margin_ = 0, com_x_ = 0, com_y_ = 0;
+    int off_leg_ = -1;
+    Vec3 off_{0, 0, 0}, off_target_{0, 0, 0};
     float rest_s_ = 0;
 };
 

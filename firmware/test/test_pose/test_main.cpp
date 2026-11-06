@@ -174,6 +174,43 @@ static void test_tilt_hold_closes_the_sag() {
     TEST_ASSERT_EQUAL_FLOAT(0, th.roll());
 }
 
+// The balance probe: on four (quad), a corner foot lifted 10 mm leaves the ground and the robot
+// stands on three; one foot at a time; a command that moves puts it back before the gait steps;
+// refused while lying.
+static void test_foot_offset_lifts_and_returns() {
+    SimRobot r;
+    r.init();
+    float t = 0;
+    auto run = [&](float sec, const BodyTwist& c) {
+        for (float s = 0; s < sec; s += kDt, t += kDt) {
+            r.command(c, t);
+            r.step(kDt, t);
+        }
+    };
+    TEST_ASSERT_TRUE(r.set_gait_params(quad_gait_params()));
+    run(2, {0, 0, 0});
+    TEST_ASSERT_TRUE(r.foot_down(2));
+    TEST_ASSERT_TRUE(r.set_foot_offset(2, {0, 0, 0.010f}));      // rr
+    TEST_ASSERT_FALSE(r.set_foot_offset(3, {0, 0, 0.010f}));     // another foot: refused
+    TEST_ASSERT_FALSE(r.set_foot_offset(2, {0, 0, 0.040f}));     // too high
+    run(1, {0, 0, 0});
+    TEST_ASSERT_FALSE(r.foot_down(2));
+    TEST_ASSERT_TRUE(r.foot_down(0) && r.foot_down(3) && r.foot_down(5));
+    TEST_ASSERT_TRUE(r.margin() >= 0);  // centred: on the rf-lr diagonal's line, not past it
+    // A walk command: the foot comes back first, then the gait walks.
+    run(0.3f, {0.02f, 0, 0});
+    TEST_ASSERT_TRUE(r.gait().standing());
+    run(1, {0.02f, 0, 0});
+    TEST_ASSERT_FALSE(r.foot_offset_active());
+    run(3, {0.02f, 0, 0});
+    TEST_ASSERT_FALSE(r.gait().standing());
+    // Lying: refused.
+    run(2 * quad_gait_params().max_period_s + 1, {0, 0, 0});
+    r.rest(true);
+    run(4, {0, 0, 0});
+    TEST_ASSERT_FALSE(r.set_foot_offset(2, {0, 0, 0.010f}));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_pose_transform_round_trips);
@@ -182,5 +219,6 @@ int main() {
     RUN_TEST(test_every_corner_walking);
     RUN_TEST(test_rest_eases_the_pose_and_rates_hold);
     RUN_TEST(test_tilt_hold_closes_the_sag);
+    RUN_TEST(test_foot_offset_lifts_and_returns);
     return UNITY_END();
 }

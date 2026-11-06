@@ -1,10 +1,35 @@
+# User meta for the miniHexa (ESP32), after linorobot2-cockpit's firmware/esp32.meta.
+#
+# A best-effort XRCE stream cannot fragment: a message has to fit one transport MTU, and
+# the client's default for a custom transport is 512 bytes. nav_msgs/Odometry with its two
+# 6x6 covariances is ~720 bytes (/odom/gait, /sim/ground_truth), JointState with 18 names
+# about as much: 1024 fits them with room.
+#
+# rmw_microxrcedds entity pools: sized to what this firmware creates (main.cpp
+# entities_create), not to micro_ros_platformio's defaults. The pools are STATIC: every
+# slot is .bss whether or not anything uses it. Running out of slots fails at RUNTIME
+# (the session's entities are not created: no topics), not as a build error, so main.cpp
+# static_asserts the two counts it needs.
+#
+#   MAX_PUBLISHERS    6  joint_states, odom/gait, battery, and as the mode has them
+#                        imu/data, sonar, sim/ground_truth: six at most.
+#   MAX_SUBSCRIPTIONS 5  cmd_vel, gait_params, shutdown, body_pose, foot_offset.
+#   MAX_SERVICES      0  no rclc_service_init anywhere in the firmware.
+#   MAX_CLIENTS       0  no rclc_client_init, and no parameter server.
+#   MAX_HISTORY       1  the client's static INPUT buffers, one pool shared by every
+#                        subscription, each MTU x STREAM_HISTORY bytes. One buffer means one
+#                        received message held at a time: every subscription is keep-last 1
+#                        (main.cpp sub_init), or it keeps the OLDEST message.
+#
+# A change here takes effect only when libmicroros is rebuilt: delete
+# .pio/libdeps/<env>/micro_ros_platformio/libmicroros (it is built only when missing).
 {
     "names": {
         "rmw_microxrcedds": {
             "cmake-args": [
                 "-DRMW_UXRCE_MAX_NODES=1",
                 "-DRMW_UXRCE_MAX_PUBLISHERS=6",
-                "-DRMW_UXRCE_MAX_SUBSCRIPTIONS=4",
+                "-DRMW_UXRCE_MAX_SUBSCRIPTIONS=5",
                 "-DRMW_UXRCE_MAX_SERVICES=0",
                 "-DRMW_UXRCE_MAX_CLIENTS=0",
                 "-DRMW_UXRCE_MAX_HISTORY=1",

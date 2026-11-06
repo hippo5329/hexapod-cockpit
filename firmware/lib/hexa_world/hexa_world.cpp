@@ -114,6 +114,7 @@ Vec3 from_posed_body(const BodyPose& p, const Vec3& b) {
 // Where leg's foot goes in the stance frame this tick: the gait's, drawn in for lying down.
 Vec3 SimRobot::foot_target(int leg, float r) const {
     Vec3 f = gait_.foot(leg);
+    if (leg == off_leg_) f = {f.x + off_.x, f.y + off_.y, f.z + off_.z};
     if (r > 0) {
         // Resting only from a stance: the feet are on their neutral spots.
         const Hip& h = g_->hip[leg];
@@ -178,13 +179,39 @@ void SimRobot::actual_feet(Vec3* out, bool* contact) const {
     }
 }
 
+bool SimRobot::set_foot_offset(int leg, const Vec3& d) {
+    if (leg < 0) {
+        off_target_ = {0, 0, 0};
+        return true;
+    }
+    if (leg >= kLegs || std::fabs(d.x) > 0.02f || std::fabs(d.y) > 0.02f || d.z < 0 || d.z > 0.03f) return false;
+    if (!gait_.standing() || rest_s_ > 0 || rest_want_) return false;
+    if (off_leg_ >= 0 && off_leg_ != leg) return false;  // one foot at a time: the other one back first
+    off_leg_ = leg;
+    off_target_ = d;
+    return true;
+}
+
 void SimRobot::command(const BodyTwist& cmd, float now_s) {
-    if (cmd.vx != 0 || cmd.vy != 0 || cmd.wz != 0) rest_want_ = false;
+    if (cmd.vx != 0 || cmd.vy != 0 || cmd.wz != 0) {
+        rest_want_ = false;
+        off_target_ = {0, 0, 0};
+    }
     gait_.command(rest_s_ > 0 ? BodyTwist{0, 0, 0} : cmd, now_s);
 }
 
 StepCounts SimRobot::step(float dt, float now_s) {
     StepCounts n;
+    // The probe's foot toward its target (back to the spot before the gait may step or the robot lie).
+    if (off_leg_ >= 0) {
+        if (rest_want_) off_target_ = {0, 0, 0};
+        const float dx = off_target_.x - off_.x, dy = off_target_.y - off_.y, dz = off_target_.z - off_.z;
+        const float d = std::sqrt(dx * dx + dy * dy + dz * dz), st = 0.02f * dt;
+        off_ = d <= st ? off_target_ : Vec3{off_.x + dx * st / d, off_.y + dy * st / d, off_.z + dz * st / d};
+        if (off_target_.x == 0 && off_target_.y == 0 && off_target_.z == 0 && d <= st) off_leg_ = -1;
+    }
+    // While a foot is off its spot the gait holds (a command waits until the foot is back).
+    if (off_leg_ >= 0) gait_.command({0, 0, 0}, now_s);
     gait_.step(dt, now_s);
     if (rest_want_ && gait_.standing()) rest_s_ = std::fmin(1.0f, rest_s_ + dt / rp_.time_s);
     else if (!rest_want_) rest_s_ = std::fmax(0.0f, rest_s_ - dt / rp_.time_s);

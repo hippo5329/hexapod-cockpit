@@ -283,6 +283,7 @@ the same code. A real QMI8658A will need dt from the sample timestamps.
 | `/gait_params` | `std_msgs/Float32MultiArray` | subscribed: the gait's parameters (above) |
 | `/shutdown` | `std_msgs/String` | subscribed: data `shutdown` = the final shutdown (above) |
 | `/body_pose` | `geometry_msgs/Pose` | subscribed: the body's shift (position, m) and turn (orientation) over planted feet (Body pose, below) |
+| `/foot_offset` | `std_msgs/Float32MultiArray` | subscribed: the balance probe, `leg dx dy dz` (leg 0-5: rf rm rr lr lm lf; m, \|dx\|, \|dy\| ≤ 0.02, dz 0-0.03) moves one foot off its spot while the robot stands; `-1 0 0 0` or an empty array puts it back. A command that moves puts it back first. The tilt hold keeps its trims while a foot is off, so a tip shows on the IMU |
 | `/imu/data` | `sensor_msgs/Imu` | 50 Hz, gyro bias taken out, with the AHRS's orientation (above). Sim: the simulated QMI8658A ([simulation.md](simulation.md)); real: the QMI8658 (±8 g, ±1024 dps, 224 Hz, on-chip low-pass ~30 Hz), in the body frame (the robot's `imu_level`) |
 | `/sonar` | `sensor_msgs/Range` | 10 Hz. Sim: the simulated ultrasonic; real: the I2C module. Nothing within reach reads `max_range`, never +INF (`nav2_collision_monitor` treats an out-of-span reading as an invalid source and stops) |
 | `/battery` | `sensor_msgs/BatteryState` | 1 Hz, the pack's voltage from the board's monitor (both modes; only when it answers) |
@@ -300,7 +301,11 @@ Walking, the feet slip and servos lag, so the twist is loose and an EKF's headin
 the body is still and the gait's zero is exact, declared tighter than the gyro: the EKF holds the heading on it
 (a zero-velocity update). Its pose is the integral of the same twist; the EKF does not fuse it.
 
-Every published topic is best effort.
+Every published topic is best effort, and so is every subscription, keep-last 1: the board holds one received
+message at a time (`RMW_UXRCE_MAX_HISTORY=1`, `esp32.meta`), and rclc's default (reliable, keep-last 10) would
+make it keep the oldest. Both as linorobot2-cockpit's firmware. A reliable publisher matches. The one-shot
+topics (`/gait_params`, `/shutdown`, `/body_pose`, `/foot_offset`) are idempotent: to be sure, send one again,
+or read the board's log line for it.
 
 ### Serial link budget
 

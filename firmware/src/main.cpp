@@ -41,7 +41,7 @@
 // truth) and 4 subscriptions; with a stale library the 6th failed and every session was torn
 // down at once. Delete .pio/libdeps/<env>/micro_ros_platformio/libmicroros after editing the meta.
 static_assert(RMW_UXRCE_MAX_PUBLISHERS >= 6, "libmicroros built with fewer publishers than esp32.meta: rebuild it");
-static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 4, "libmicroros built with fewer subscriptions than esp32.meta: rebuild it");
+static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 5, "libmicroros built with fewer subscriptions than esp32.meta: rebuild it");
 #include <nav_msgs/msg/odometry.h>
 #include <sensor_msgs/msg/battery_state.h>
 #include <std_msgs/msg/float32_multi_array.h>
@@ -259,7 +259,9 @@ void robot_tick(float now_s) {
         const bool still = real_imu && ahrs.seeded() && robot.gait().standing() && robot.rest_level() == 0 && !shutdown_why;
         // Integrate only once the pose is at its target: on the ramp the error is the ramp's, and
         // integrating it overshot the next step by 1-2 deg on the robot.
-        if ((!still || robot.pose_at_target()) &&
+        // A foot off its spot (the balance probe): the trims stay as they are, so a tip shows.
+        if (robot.foot_offset_active()) {
+        } else if ((!still || robot.pose_at_target()) &&
             tilt_hold.update(robot.pose_target().roll, robot.pose_target().pitch, mr, mp, still, kTickS))
             robot.set_tilt_trim(tilt_hold.roll(), tilt_hold.pitch());
     }
@@ -310,7 +312,7 @@ rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
 rclc_executor_t executor;
-rcl_subscription_t cmd_sub, gait_sub, shutdown_sub, pose_sub;
+rcl_subscription_t cmd_sub, gait_sub, shutdown_sub, pose_sub, foot_sub;
 // gait_params (std_msgs/Float32MultiArray): period s, duty, lift m, max stride m [, mode: 0 tripod,
 // 1 quad]. With a mode, its defaults first (gait_preset) and a value of 0 keeps the default's: [0, 0,
 // 0, 0, 1] is the quadruped as it comes. Applied when the gait next stands, if valid
@@ -324,6 +326,11 @@ char shutdown_msg_data[16];
 // body_pose (geometry_msgs/Pose): the body's shift (position, m) and turn (orientation) over planted
 // feet (hexa_world.h BodyPose; clamped, and only as far as the legs reach). Kept until the next one.
 geometry_msgs__msg__Pose pose_msg;
+// foot_offset (std_msgs/Float32MultiArray): leg (0-5: rf rm rr lr lm lf), dx, dy, dz (m, stance frame;
+// |dx|, |dy| <= 0.02, dz 0-0.03): the balance probe (SimRobot::set_foot_offset), standing only; leg
+// -1 (or an empty array) puts it back. The tilt hold keeps its trims meanwhile.
+std_msgs__msg__Float32MultiArray foot_msg;
+float foot_msg_data[4];
 
 rcl_publisher_t joint_pub, odom_pub, imu_pub, sonar_pub, truth_pub, battery_pub;
 #ifdef HEXA_CMD_VEL_STAMPED
@@ -383,6 +390,27 @@ void gait_callback(const void* msg) {
                   p.quad ? "quad" : "tripod", p.period_s, p.duty, p.lift, p.max_stride);
 }
 
+void foot_callback(const void* msg) {
+    const auto* m = static_cast<const std_msgs__msg__Float32MultiArray*>(msg);
+    if (shutdown_why) return;
+    const float* d = m->data.data;
+    if (m->data.size == 0 || (m->data.size == 4 && d[0] < 0)) {
+        robot.set_foot_offset(-1, {0, 0, 0});
+        hexa_log::log(hexa_log::kInfo, "foot_offset: back down");
+        return;
+    }
+    const int leg = m->data.size == 4 ? static_cast<int>(d[0]) : -2;
+    if (leg < 0 || leg >= kLegs || d[0] != leg) {
+        hexa_log::log(hexa_log::kWarning, "foot_offset: refused (leg dx dy dz)");
+        return;
+    }
+    last_move_s = millis() / 1000.0f;  // use: the idle timer starts again
+    const bool ok = robot.set_foot_offset(leg, {d[1], d[2], d[3]});
+    hexa_log::log(ok ? hexa_log::kInfo : hexa_log::kWarning, "foot_offset: %s %+.0f %+.0f %+.0f mm%s", kLegNames[leg],
+                  d[1] * 1000, d[2] * 1000, d[3] * 1000,
+                  ok ? "" : ": refused (out of range, another foot off, walking or lying)");
+}
+
 void shutdown_callback(const void* msg) {
     const auto* m = static_cast<const std_msgs__msg__String*>(msg);
     if (m->data.size == 8 && strncmp(m->data.data, "shutdown", 8) == 0) shutdown_request("/shutdown");
@@ -422,6 +450,9 @@ void msgs_init() {
     gait_msg.data.data = gait_msg_data;
     gait_msg.data.capacity = sizeof gait_msg_data / sizeof gait_msg_data[0];
     gait_msg.data.size = 0;
+    foot_msg.data.data = foot_msg_data;
+    foot_msg.data.capacity = sizeof foot_msg_data / sizeof foot_msg_data[0];
+    foot_msg.data.size = 0;
     for (int k = 0; k < kJoints; ++k) set_string(&joint_names[k], kJointNames[k]);
     joint_msg.name.data = joint_names;
     joint_msg.name.size = joint_msg.name.capacity = kJoints;
@@ -458,6 +489,22 @@ void msgs_init() {
     battery_msg.present = true;
 }
 
+// Every subscription is BEST EFFORT, keep-last 1, as linorobot2-cockpit's cmdSubscriptionInit.
+// rclc's default (reliable, keep-last 10) is the wrong pair for a board built with
+// RMW_UXRCE_MAX_HISTORY=1 (esp32.meta): the client has ONE static input buffer, shared by every
+// subscription, and with depth 10 a message arriving while one is buffered asks the empty pool
+// for another and is DROPPED: the board keeps the oldest, not the newest. Depth 1 holds the
+// newest, and best effort costs no acknowledgements. A reliable publisher matches a best-effort
+// subscriber. The one-shot topics (gait_params, shutdown, body_pose, foot_offset) are idempotent:
+// a sender that must be sure repeats the message (or reads the log line it gives).
+rcl_ret_t sub_init(rcl_subscription_t* sub, const rosidl_message_type_support_t* ts, const char* topic) {
+    rmw_qos_profile_t qos = rmw_qos_profile_default;
+    qos.history = RMW_QOS_POLICY_HISTORY_KEEP_LAST;
+    qos.depth = 1;
+    qos.reliability = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+    return rclc_subscription_init(sub, &node, ts, topic, &qos);
+}
+
 bool entities_create() {
     allocator = rcl_get_default_allocator();
     if (rclc_support_init(&support, 0, nullptr, &allocator) != RCL_RET_OK) return false;
@@ -467,15 +514,14 @@ bool entities_create() {
 #else
     const rosidl_message_type_support_t* cmd_ts = ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist);
 #endif
-    if (rclc_subscription_init_default(&cmd_sub, &node, cmd_ts, "cmd_vel") != RCL_RET_OK) return false;
-    if (rclc_subscription_init_default(&gait_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
-                                       "gait_params") != RCL_RET_OK)
+    if (sub_init(&cmd_sub, cmd_ts, "cmd_vel") != RCL_RET_OK) return false;
+    if (sub_init(&gait_sub, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray), "gait_params") != RCL_RET_OK)
         return false;
-    if (rclc_subscription_init_default(&shutdown_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
-                                       "shutdown") != RCL_RET_OK)
+    if (sub_init(&shutdown_sub, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "shutdown") != RCL_RET_OK)
         return false;
-    if (rclc_subscription_init_default(&pose_sub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Pose),
-                                       "body_pose") != RCL_RET_OK)
+    if (sub_init(&pose_sub, ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Pose), "body_pose") != RCL_RET_OK)
+        return false;
+    if (sub_init(&foot_sub, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray), "foot_offset") != RCL_RET_OK)
         return false;
     if (rclc_publisher_init_best_effort(&joint_pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, JointState),
                                         "joint_states") != RCL_RET_OK)
@@ -502,7 +548,7 @@ bool entities_create() {
             return false;
     }
     executor = rclc_executor_get_zero_initialized_executor();
-    if (rclc_executor_init(&executor, &support.context, 4, &allocator) != RCL_RET_OK) return false;
+    if (rclc_executor_init(&executor, &support.context, 5, &allocator) != RCL_RET_OK) return false;
     if (rclc_executor_add_subscription(&executor, &cmd_sub, &cmd_msg, &cmd_callback, ON_NEW_DATA) != RCL_RET_OK)
         return false;
     if (rclc_executor_add_subscription(&executor, &gait_sub, &gait_msg, &gait_callback, ON_NEW_DATA) != RCL_RET_OK)
@@ -511,6 +557,8 @@ bool entities_create() {
         RCL_RET_OK)
         return false;
     if (rclc_executor_add_subscription(&executor, &pose_sub, &pose_msg, &pose_callback, ON_NEW_DATA) != RCL_RET_OK)
+        return false;
+    if (rclc_executor_add_subscription(&executor, &foot_sub, &foot_msg, &foot_callback, ON_NEW_DATA) != RCL_RET_OK)
         return false;
     rmw_uros_sync_session(1000);
     return true;
@@ -529,6 +577,7 @@ void entities_destroy() {
     rcl_subscription_fini(&gait_sub, &node);
     rcl_subscription_fini(&shutdown_sub, &node);
     rcl_subscription_fini(&pose_sub, &node);
+    rcl_subscription_fini(&foot_sub, &node);
     rclc_executor_fini(&executor);
     rcl_node_fini(&node);
     rclc_support_fini(&support);
