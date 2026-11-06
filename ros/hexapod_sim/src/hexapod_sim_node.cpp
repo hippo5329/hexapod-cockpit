@@ -64,7 +64,17 @@ public:
         const bool stamped = declare_parameter("cmd_vel_stamped", default_stamped());
         const double room = declare_parameter("room_half_size", 1.0);
         const int seed = declare_parameter("seed", 5329);
-        if (!robot_.init(slip)) throw std::runtime_error("neutral stance unreachable");
+        // gait: tripod, or quad (the firmware's NVS gait=quad: middle legs up, the corner legs crawl);
+        // com_x/com_y: the centre of mass off the body's origin, m (the gait's and the model's).
+        const std::string gait = declare_parameter("gait", std::string("tripod"));
+        const double com_x = declare_parameter("com_x", 0.0), com_y = declare_parameter("com_y", 0.0);
+        if (gait != "tripod" && gait != "quad") throw std::runtime_error("gait must be tripod or quad");
+        hexa::GaitParams gp = gait == "quad" ? hexa::quad_gait_params() : hexa::GaitParams();
+        gp.com_x = static_cast<float>(com_x);
+        gp.com_y = static_cast<float>(com_y);
+        if (!hexa::TripodGait::params_valid(gp)) throw std::runtime_error("com_x/com_y out of range (0.03 m)");
+        if (!robot_.init(slip, gp)) throw std::runtime_error("neutral stance unreachable");
+        robot_.set_com(gp.com_x, gp.com_y);
         imu_.init(hexa::ImuParams(), static_cast<uint32_t>(seed));
         gyro_bias_.init();
         ahrs_.init();
@@ -108,8 +118,8 @@ public:
 
         start_ = std::chrono::steady_clock::now();
         timer_ = create_wall_timer(20ms, [this] { tick(); });
-        RCLCPP_INFO(get_logger(), "miniHexa sim: slip %.2f, room %.1f x %.1f m, /cmd_vel %s", slip, 2 * room, 2 * room,
-                    stamped ? "TwistStamped" : "Twist");
+        RCLCPP_INFO(get_logger(), "miniHexa sim: slip %.2f, room %.1f x %.1f m, /cmd_vel %s, gait %s (com %+.0f, %+.0f mm)",
+                    slip, 2 * room, 2 * room, stamped ? "TwistStamped" : "Twist", gait.c_str(), com_x * 1000, com_y * 1000);
     }
 
 private:

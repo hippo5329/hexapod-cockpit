@@ -72,6 +72,8 @@ firmware (`tools/make_nvs.py <settings file> <out.bin>`, flashed at 0x9000; OTA 
 | `syslog_ip`, `syslog_port` | the UDP syslog sink (Syslog, below); port default 5140; none: no syslog |
 | `tilt_hold` | body tilt feedback gain while standing (Tilt hold, below), 1/s, 0-5; default 1.5; `0`: off |
 | `yaw_hold` | heading hold / turn-rate feedback gain (Gait, below), 1/s, 0-5; default 1.0; `0`: off |
+| `gait` | `tripod` (default) or `quad`: the gait at boot (Quadruped, below) |
+| `com` | `x,y` in mm (each within ±30): the centre of mass off the body's origin (x forward, y left), for the quadruped's sway; default `0,0` |
 | `imu_level` | `roll,pitch` in degrees (each within ±10): how the IMU sits on its board, read with the body level (a level on the top plate) from the console's `imu`. Every IMU sample is turned into the body frame with it; none: the board is taken as level |
 
 The settings file carries the Wi-Fi key and the OTA password: keep it private (mode 0600) and out of any
@@ -81,7 +83,7 @@ firmware replaces it.
 **Over Wi-Fi, without USB**, `tools/push_settings.py <board IP> <settings file> <password file>` changes
 settings on a board that has OTA. The file has the same lines, only the keys to change; the others stay. An
 empty value (`trims=`) removes a key that has a default (`app`, `sim`, `port`, `trims`, `imu_level`,
-`idle_s`, `low_bat_mv`, `syslog_ip`, `syslog_port`, `yaw_hold`, `tilt_hold`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
+`idle_s`, `low_bat_mv`, `syslog_ip`, `syslog_port`, `yaw_hold`, `tilt_hold`, `gait`, `com`). It goes through ArduinoOTA with the OTA password (read from the password file, never the command
 line) and its MD5 check, into the unused `spiffs` partition. The board reboots, and the robot stands in its
 boot pose. Before anything reads NVS, the board checks every line (`lib/hexa_settings`, the rules of
 `make_nvs.py`). It writes the keys only if all pass, then erases the upload, so the upload is applied once.
@@ -170,7 +172,19 @@ meanwhile. A command that moves no foot faster than 2 mm/s counts as zero, so th
 
 `/gait_params` (`std_msgs/Float32MultiArray`: period s, duty, lift m, longest stride m) changes them at run time.
 They are taken when the gait next stands and only within bounds (period 0.5-3 s, duty 0.5-0.8, lift 10-40 mm,
-stride 10-60 mm); `info` shows the ones in use.
+stride 10-60 mm); `info` shows the ones in use. A fifth value switches the mode: `0` tripod, `1` quadruped. The
+mode's defaults come first, and a `0` among the other four keeps the default's, so `[0, 0, 0, 0, 1]` is the
+quadruped as it comes and `[0, 0, 0, 0, 0]` the tripod's defaults.
+
+**Quadruped.** With `gait=quad` (NVS, at boot), `/gait_params`'s mode `1` or the console's `gait quad` (both at
+run time, not kept), the middle legs go up, 40 mm above the stance floor, and the four corner legs crawl one
+at a time: left rear, left front, right rear, right front. Before each lift the body sways until the centre
+of mass is 20 mm inside the triangle of the three feet that stay down. The centre of mass is the body's origin
+plus `com` (NVS): measure it before walking on four, because 10 mm of error costs about 5 mm of margin. The
+defaults (duty 0.88, period 2.5-4 s, stride 45 mm: 20 mm/s at most) and how they were chosen are in
+[simulation.md](simulation.md#quadruped-crawl---quad). The switch is taken while the robot stands: the middle feet
+rise (or come down for `gait tripod`) in about a second, and walking waits for them. `info` shows the mode, the
+sway and the centre of mass; the `health` line says `(quad)`.
 
 **Idle.** The servo controller has no "servos off": its protocol only sets pulses, and it holds the last ones,
 so the servos are never unpowered while the board is on. To save power the robot lies down instead: after

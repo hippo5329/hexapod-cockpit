@@ -6,7 +6,7 @@
 The settings file has make_nvs.py's KEY=VALUE lines, but only the keys to change: the others
 stay as they are in the board's NVS. An empty value (`trims=`) removes a key that has a
 default (app, sim, port, trims, imu_level, idle_s, low_bat_mv, syslog_ip, syslog_port,
-yaw_hold, tilt_hold). Over Wi-Fi, link can only be wifi, and ssid, psk, agent and ota_pw cannot
+yaw_hold, tilt_hold, gait, com). Over Wi-Fi, link can only be wifi, and ssid, psk, agent and ota_pw cannot
 be removed: a robot reached only over Wi-Fi would be lost.
 
 It goes through ArduinoOTA (port 3232) with the OTA password, read from the password file's
@@ -29,9 +29,9 @@ MAGIC = "hexa-settings 1\n"
 MAX = 4096
 KEYS = {"app", "sim", "link", "ssid", "psk", "agent", "port", "ota_pw", "trims", "imu_level", "idle_s",
         "low_bat_mv", "syslog_ip", "syslog_port", "yaw_hold",
-        "tilt_hold"}
+        "tilt_hold", "gait", "com"}
 REMOVABLE = {"app", "sim", "port", "trims", "imu_level", "idle_s", "low_bat_mv", "syslog_ip", "syslog_port",
-             "yaw_hold", "tilt_hold"}
+             "yaw_hold", "tilt_hold", "gait", "com"}
 
 
 def load(path):

@@ -21,6 +21,10 @@ the OTA password, so keep it private (mode 0600) and out of any public repositor
              none: no syslog. Wi-Fi links only
     yaw_hold heading hold / turn-rate feedback gain from the gyro, 1/s (default 1.0; 0: off; max 5)
     tilt_hold  body tilt feedback gain from the IMU while standing, 1/s (default 1.5; 0: off; max 5)
+    gait     tripod | quad: the gait at boot (default tripod; quad: middle legs up, the corner legs
+             crawl; hexa_gait.h quad_gait_params())
+    com      x,y in mm (each within +-30): the centre of mass off the body's origin, body frame (x
+             forward, y left), for the quadruped's sway (default 0,0)
     imu_level  roll,pitch of the IMU on its board, degrees (each within +-10), read with the body
              level (a level on the top plate) from the console's `imu`: every sample is turned
              into the body frame
@@ -37,8 +41,8 @@ import sys
 import tempfile
 
 NVS_SIZE = 0x5000
-STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level", "idle_s", "low_bat_mv", "syslog_ip", "syslog_port", "yaw_hold", "tilt_hold"}
-CHOICES = {"app": {"base", "console"}, "link": {"serial", "wifi"}, "sim": {"0", "1"}}
+STRINGS = {"app", "link", "ssid", "psk", "agent", "ota_pw", "trims", "imu_level", "idle_s", "low_bat_mv", "syslog_ip", "syslog_port", "yaw_hold", "tilt_hold", "gait", "com"}
+CHOICES = {"app": {"base", "console"}, "link": {"serial", "wifi"}, "sim": {"0", "1"}, "gait": {"tripod", "quad"}}
 
 
 def load(path):
@@ -85,6 +89,15 @@ def load(path):
                 sys.exit(f"{key} must be a gain 0-5 (1/s)")
     if "syslog_port" in vals and not (vals["syslog_port"].isdigit() and 0 < int(vals["syslog_port"]) < 65536):
         sys.exit("syslog_port must be 1-65535")
+    if "com" in vals:
+        f = [t.strip() for t in vals["com"].split(",")]
+        try:
+            ok = len(f) == 2 and all(abs(float(t)) <= 30 and "e" not in t.lower() for t in f)
+        except ValueError:
+            ok = False
+        if not ok:
+            sys.exit("com must be x,y in mm, each within +-30")
+        vals["com"] = ",".join("%.1f" % float(t) for t in f)
     if "imu_level" in vals:
         f = [t.strip() for t in vals["imu_level"].split(",")]
         try:

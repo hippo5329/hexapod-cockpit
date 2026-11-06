@@ -7,7 +7,7 @@
 //
 // Only the keys given change; an empty value removes a key (only those with a default:
 // app, sim, port, trims, imu_level, idle_s, low_bat_mv, syslog_ip, syslog_port,
-// yaw_hold, tilt_hold). Every line must pass or nothing is taken. The
+// yaw_hold, tilt_hold, gait, com). Every line must pass or nothing is taken. The
 // rules are make_nvs.py's, plus what would strand a robot reached only over Wi-Fi: link
 // may only be wifi, and ssid, psk, agent and ota_pw cannot be removed.
 #pragma once

@@ -47,6 +47,15 @@ static void test_empty_value_removes_only_keys_with_a_default() {
     for (const char* k : {"ssid=\n", "psk=\n", "agent=\n", "ota_pw=\n", "link=\n"}) TEST_ASSERT_TRUE(refused(k));
 }
 
+static void test_gait_and_com() {
+    std::vector<Setting> s;
+    std::string why;
+    TEST_ASSERT_TRUE(parse("gait=quad\ncom=-8.5,4\n", &s, &why));
+    TEST_ASSERT_EQUAL(2, s.size());
+    TEST_ASSERT_TRUE(parse("gait=\ncom=\n", &s, &why));  // removable: back to the defaults
+    TEST_ASSERT_TRUE(refused("gait=tripod\ngait=quad\n"));  // a key given twice, as any key
+}
+
 static void test_bad_values_refuse_the_whole_blob() {
     TEST_ASSERT_TRUE(refused("idle_s=60\nimu_level=11,0\n"));  // the good line is not taken either
     TEST_ASSERT_TRUE(refused("imu_level=3.4\n"));
@@ -55,6 +64,9 @@ static void test_bad_values_refuse_the_whole_blob() {
     TEST_ASSERT_TRUE(refused("idle_s=-1\n"));
     TEST_ASSERT_TRUE(refused("yaw_hold=-1\n"));
     TEST_ASSERT_TRUE(refused("tilt_hold=6\n"));
+    TEST_ASSERT_TRUE(refused("gait=hexa\n"));
+    TEST_ASSERT_TRUE(refused("com=31,0\n"));
+    TEST_ASSERT_TRUE(refused("com=5\n"));
     TEST_ASSERT_TRUE(refused("yaw_hold=5.5\n"));
     TEST_ASSERT_TRUE(refused("syslog_ip=10.72.1\n"));
     TEST_ASSERT_TRUE(refused("syslog_port=0\n"));
@@ -110,6 +122,7 @@ int main() {
     UNITY_BEGIN();
     RUN_TEST(test_good_blob_gives_its_keys);
     RUN_TEST(test_empty_value_removes_only_keys_with_a_default);
+    RUN_TEST(test_gait_and_com);
     RUN_TEST(test_bad_values_refuse_the_whole_blob);
     RUN_TEST(test_link_serial_is_refused);
     RUN_TEST(test_why_never_shows_a_value);

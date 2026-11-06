@@ -1,6 +1,6 @@
 """The miniHexa simulated on the host, walking in RViz: no board, no agent.
 
-    ros2 launch hexapod_sim sim.launch.py [slip:=0.05] [rviz:=true]
+    ros2 launch hexapod_sim sim.launch.py [slip:=0.05] [rviz:=true] [gait:=tripod|quad]
 
 hexapod_sim_node stands in for the firmware (/cmd_vel in; /joint_states, /odom/gait,
 /imu/data, /sonar and /sim/ground_truth out) in a walled 2 m x 2 m room. The robot is drawn where
@@ -26,8 +26,10 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("slip", default_value="0.05", description="fraction of stance motion lost"),
         DeclareLaunchArgument("rviz", default_value="true"),
+        DeclareLaunchArgument("gait", default_value="tripod", description="tripod or quad (middle legs up)"),
         Node(package="hexapod_sim", executable="hexapod_sim_node",
-             parameters=[{"slip": ParameterValue(LaunchConfiguration("slip"), value_type=float)}]),
+             parameters=[{"slip": ParameterValue(LaunchConfiguration("slip"), value_type=float),
+                          "gait": LaunchConfiguration("gait")}]),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(bringup, "launch", "view_robot.launch.py")),
             launch_arguments={"rviz": LaunchConfiguration("rviz"), "rviz_config": rviz_file}.items()),
