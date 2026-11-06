@@ -13,6 +13,8 @@ KEY=VALUE lines (# comments allowed), NVS namespace `hexacam` (camera/src/main.c
     fps           1-30                                     (default 10)
     vflip, hmirror  1 | 0: flip the image for the mount    (default 0)
     syslog_ip, syslog_port  the syslog sink (port default 5140)
+    xclk          the sensor clock, MHz 5-24                 (default 20)
+    tx_dbm        Wi-Fi transmit power, dBm 2-20             (default 20; cheap boards lose frames at 20)
 
 The file holds the Wi-Fi key and the OTA password: keep it private (0600) and out of any public
 repository. The image goes to the `nvs` partition (0x9000, 0x5000 bytes). Needs the
@@ -26,7 +28,8 @@ import sys
 import tempfile
 
 NVS_SIZE = 0x5000
-KEYS = {"ssid", "psk", "ota_pw", "name", "frame", "quality", "fps", "vflip", "hmirror", "syslog_ip", "syslog_port"}
+KEYS = {"ssid", "psk", "ota_pw", "name", "frame", "quality", "fps", "vflip", "hmirror", "syslog_ip", "syslog_port",
+        "xclk", "tx_dbm"}
 FRAMES = {"qqvga", "qvga", "vga", "svga", "xga", "hd"}
 
 
@@ -48,9 +51,16 @@ def load(path):
         sys.exit("ssid must be <= 32 characters and psk 8-63")
     if "frame" in vals and vals["frame"] not in FRAMES:
         sys.exit(f"frame must be one of {sorted(FRAMES)}")
-    for key, lo, hi in (("quality", 10, 40), ("fps", 1, 30), ("syslog_port", 1, 65535)):
+    for key, lo, hi in (("quality", 10, 40), ("fps", 1, 30), ("syslog_port", 1, 65535), ("xclk", 5, 24)):
         if key in vals and not (vals[key].isdigit() and lo <= int(vals[key]) <= hi):
             sys.exit(f"{key} must be {lo}-{hi}")
+    if "tx_dbm" in vals:
+        try:
+            ok = 2 <= float(vals["tx_dbm"]) <= 20
+        except ValueError:
+            ok = False
+        if not ok:
+            sys.exit("tx_dbm must be 2-20")
     for key in ("vflip", "hmirror"):
         if key in vals and vals[key] not in ("0", "1"):
             sys.exit(f"{key} must be 0 or 1")

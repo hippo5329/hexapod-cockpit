@@ -9,6 +9,7 @@
 //   http://<ip>/control      ?vflip=0|1&hmirror=0|1&fps=1-30&xclk=5-24&frame=<size>: kept in NVS (a new size
 //                            reboots, a new xclk restarts the camera); capture=0|1 stops/starts it (not kept)
 //   POST http://<ip>/wifi    ssid=..&psk=..[&syslog_ip=..]: another network, on trial (60 s, else back)
+//   /control?tx=2-20         Wi-Fi transmit power in dBm, kept (cheap boards lose frames at 20)
 //
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
 // (OTA on 3232, none: no OTA), name (hostname, default hexacam), frame (qqvga, qvga, vga, svga, xga, hd;
@@ -35,6 +36,9 @@ bool vflip = false, hmirror = false;
 const char* sensor_name = "none";
 bool cam_ok = false, net_started = false;
 int xclk_mhz = 20;
+// Wi-Fi transmit power, dBm (2-20). Cheap S3 boards cannot hold the default 20 dBm bursts: frames and
+// acks are lost, the AP retries and falls to its slowest rate (pings of seconds, 2026-11-06).
+float tx_dbm = 20.0f;
 // /control?capture=0 stops the camera (its clock and DMA too) for a Wi-Fi test; the stream then idles.
 volatile bool paused = false, in_grab = false;
 // A Wi-Fi change from POST /wifi is on trial until the board joins the new network (see trial_loop).
@@ -73,7 +77,10 @@ void load_settings() {
     hmirror = prefs.getString("hmirror", "0") == "1";
     xclk_mhz = constrain(prefs.getString("xclk", "20").toInt(), 5, 24);
     wifi_trial = prefs.getBool("wifi_trial", false);
+    tx_dbm = constrain(prefs.getString("tx_dbm", "20").toFloat(), 2.0f, 20.0f);
 }
+
+void apply_tx_power() { esp_wifi_set_max_tx_power(static_cast<int8_t>(tx_dbm * 4)); }
 
 // The common ESP32-S3-CAM pin map (ESP32-S3-EYE / Freenove layout), checked on the board: OV3660.
 bool camera_begin() {
@@ -224,6 +231,7 @@ esp_err_t control_handler(httpd_req_t* req) {
     char q[96], v[2][2] = {}, fv[8] = {};
     bool given[2] = {}, frame_given = false;
     int new_fps = 0, new_xclk = 0, capture = -1;
+    float new_tx = 0;
     const Frame* new_frame = nullptr;
     if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
         for (int i = 0; i < 2; i++) {
@@ -255,6 +263,15 @@ esp_err_t control_handler(httpd_req_t* req) {
             }
             new_xclk = static_cast<int>(n);
         }
+        if (httpd_query_key_value(q, "tx", f, sizeof f) == ESP_OK) {
+            char* end = nullptr;
+            const float d = strtof(f, &end);
+            if (end == f || *end || d < 2 || d > 20) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "tx takes 2 to 20 (dBm)");
+                return ESP_FAIL;
+            }
+            new_tx = d;
+        }
         if (httpd_query_key_value(q, "capture", f, sizeof f) == ESP_OK) {
             if (strcmp(f, "0") && strcmp(f, "1")) {
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "capture takes 0 or 1");
@@ -272,9 +289,9 @@ esp_err_t control_handler(httpd_req_t* req) {
             }
         }
     }
-    if (!given[0] && !given[1] && !frame_given && !new_fps && !new_xclk && capture < 0) {
+    if (!given[0] && !given[1] && !frame_given && !new_fps && !new_xclk && capture < 0 && !new_tx) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&xclk=5-24&capture=0|1&frame=<size>");
+                            "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&tx=2-20&xclk=5-24&capture=0|1&frame=<size>");
         return ESP_FAIL;
     }
     Preferences w;
@@ -291,6 +308,11 @@ esp_err_t control_handler(httpd_req_t* req) {
         w.putString("fps", String(new_fps));
     }
     if (new_xclk) w.putString("xclk", String(new_xclk));
+    if (new_tx) {
+        tx_dbm = new_tx;
+        w.putString("tx_dbm", String(new_tx, 2));
+        apply_tx_power();
+    }
     w.end();
     if (s) {
         s->set_vflip(s, vflip);
@@ -306,8 +328,8 @@ esp_err_t control_handler(httpd_req_t* req) {
         camera_start();
     }
     const bool reboot = new_frame && new_frame->size != frame;
-    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d fps %d xclk %d MHz capture %s frame %s (kept)%s", vflip,
-                  hmirror, fps, xclk_mhz, cam_ok ? "on" : "off",
+    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d fps %d tx %.1f dBm xclk %d MHz capture %s frame %s (kept)%s",
+                  vflip, hmirror, fps, tx_dbm, xclk_mhz, cam_ok ? "on" : "off",
                   new_frame ? new_frame->name : frame_name(frame), reboot ? ", rebooting for the frame size" : "");
     const esp_err_t r = status_handler(req);
     if (reboot) restart_at = millis() + 500;
@@ -466,6 +488,7 @@ void setup() {
     WiFi.setSleep(false);  // modem sleep adds 100+ ms to every frame
     WiFi.setAutoReconnect(true);
     WiFi.begin(ssid.c_str(), psk.c_str());
+    apply_tx_power();
     hexa_log::log(hexa_log::kNotice, "boot: hexacam %s %s, sensor %s, frame %s, quality %d, fps %d%s%s", __DATE__,
                   __TIME__, cam_ok ? sensor_name : "FAILED", frame_name(frame), quality, fps, vflip ? ", vflip" : "",
                   hmirror ? ", hmirror" : "");
@@ -475,6 +498,12 @@ void loop() {
     if (restart_at && static_cast<int32_t>(millis() - restart_at) >= 0) ESP.restart();
     const bool up = WiFi.status() == WL_CONNECTED;
     trial_loop(up);
+    static bool was_up = false;
+    if (up && !was_up) {  // every join: the driver may restore its defaults (the robot's link.cpp does the same)
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        apply_tx_power();
+    }
+    was_up = up;
     hexa_log::loop(up);
     if (up && !net_started) {
         net_started = true;
