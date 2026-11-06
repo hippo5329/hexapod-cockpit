@@ -6,12 +6,14 @@
 //   http://<ip>/capture      one JPEG
 //   http://<ip>/status       JSON: settings, measured rate and size, Wi-Fi (rssi, power save, tx power), memory,
 //                            chip temperature
-//   http://<ip>/control      ?vflip=0|1&hmirror=0|1&fps=1-30&frame=<size>: kept in NVS (a new size reboots)
+//   http://<ip>/control      ?vflip=0|1&hmirror=0|1&fps=1-30&xclk=5-24&frame=<size>: kept in NVS (a new size
+//                            reboots, a new xclk restarts the camera); capture=0|1 stops/starts it (not kept)
 //
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
 // (OTA on 3232, none: no OTA), name (hostname, default hexacam), frame (qqvga, qvga, vga, svga, xga, hd;
 // default qvga), quality (JPEG 10-40, lower is better; default 12), fps (1-30; default 10), vflip,
-// hmirror (1: flip the image for the mount), syslog_ip, syslog_port (the robot firmware's syslog).
+// hmirror (1: flip the image for the mount), xclk (the sensor clock, MHz, 5-24; default 20), syslog_ip,
+// syslog_port (the robot firmware's syslog).
 #include <Arduino.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
@@ -31,6 +33,9 @@ int quality = 12, fps = 10;
 bool vflip = false, hmirror = false;
 const char* sensor_name = "none";
 bool cam_ok = false, net_started = false;
+int xclk_mhz = 20;
+// /control?capture=0 stops the camera (its clock and DMA too) for a Wi-Fi test; the stream then idles.
+volatile bool paused = false, in_grab = false;
 
 // What the stream has delivered, for /status and the health line.
 volatile uint32_t frames_sent = 0, bytes_sent = 0, stream_clients = 0, capture_fails = 0;
@@ -61,6 +66,7 @@ void load_settings() {
     fps = constrain(prefs.getString("fps", "10").toInt(), 1, 30);
     vflip = prefs.getString("vflip", "0") == "1";
     hmirror = prefs.getString("hmirror", "0") == "1";
+    xclk_mhz = constrain(prefs.getString("xclk", "20").toInt(), 5, 24);
 }
 
 // The common ESP32-S3-CAM pin map (ESP32-S3-EYE / Freenove layout), checked on the board: OV3660.
@@ -82,7 +88,7 @@ bool camera_begin() {
     c.pin_vsync = 6;
     c.pin_href = 7;
     c.pin_pclk = 13;
-    c.xclk_freq_hz = 20000000;
+    c.xclk_freq_hz = xclk_mhz * 1000000;
     c.ledc_timer = LEDC_TIMER_0;
     c.ledc_channel = LEDC_CHANNEL_0;
     c.pixel_format = PIXFORMAT_JPEG;
@@ -121,8 +127,14 @@ esp_err_t stream_handler(httpd_req_t* req) {
         if (wait > 0) delay(wait);
         next += period_ms;
         if (static_cast<int32_t>(millis() - next) > static_cast<int32_t>(period_ms)) next = millis();  // no burst
+        if (paused || !cam_ok) {  // the camera is stopped or being restarted: keep the client, send nothing
+            delay(50);
+            continue;
+        }
+        in_grab = true;
         camera_fb_t* fb = esp_camera_fb_get();
         if (!fb) {
+            in_grab = false;
             ++capture_fails;
             continue;
         }
@@ -138,6 +150,7 @@ esp_err_t stream_handler(httpd_req_t* req) {
             bytes_sent += fb->len;
         }
         esp_camera_fb_return(fb);
+        in_grab = false;
     }
     --stream_clients;
     hexa_log::log(hexa_log::kInfo, "stream: client gone");
@@ -168,13 +181,13 @@ esp_err_t status_handler(httpd_req_t* req) {
              "{\"name\":\"%s\",\"sensor\":\"%s\",\"frame\":\"%s\",\"quality\":%d,\"fps_cap\":%d,\"fps\":%.1f,"
              "\"kbps\":%.0f,\"clients\":%u,\"frames\":%u,\"capture_fails\":%u,\"vflip\":%d,\"hmirror\":%d,"
              "\"rssi\":%d,\"uptime_s\":%u,\"heap\":%u,\"psram_free\":%u,\"temp_c\":%.1f,\"wifi_ps\":%d,"
-             "\"tx_dbm\":%.2f,\"channel\":%d}",
+             "\"tx_dbm\":%.2f,\"channel\":%d,\"xclk_mhz\":%d,\"capture\":%d}",
              name.c_str(), sensor_name, frame_name(s ? static_cast<framesize_t>(s->status.framesize) : frame), quality,
              fps, measured_fps, measured_kbps, static_cast<unsigned>(stream_clients),
              static_cast<unsigned>(frames_sent), static_cast<unsigned>(capture_fails), vflip, hmirror,
              static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(millis() / 1000),
              static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()), temperatureRead(),
-             static_cast<int>(ps), txp / 4.0, static_cast<int>(WiFi.channel()));
+             static_cast<int>(ps), txp / 4.0, static_cast<int>(WiFi.channel()), xclk_mhz, cam_ok && !paused);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
@@ -185,12 +198,25 @@ esp_err_t status_handler(httpd_req_t* req) {
 // is checked before any is applied; the reply is /status.
 uint32_t restart_at = 0;
 
+// Stop the camera driver (clock, DMA, buffers) once the stream holds no frame; start it again.
+void camera_stop() {
+    paused = true;
+    delay(20);  // a grab that passed the check just before sets in_grab by now
+    for (int i = 0; i < 100 && in_grab; i++) delay(10);
+    if (cam_ok) esp_camera_deinit();
+    cam_ok = false;
+}
+void camera_start() {
+    cam_ok = camera_begin();
+    paused = false;
+}
+
 esp_err_t control_handler(httpd_req_t* req) {
     const char* const keys[] = {"vflip", "hmirror"};
     bool* const flags[] = {&vflip, &hmirror};
     char q[96], v[2][2] = {}, fv[8] = {};
     bool given[2] = {}, frame_given = false;
-    int new_fps = 0;
+    int new_fps = 0, new_xclk = 0, capture = -1;
     const Frame* new_frame = nullptr;
     if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
         for (int i = 0; i < 2; i++) {
@@ -213,6 +239,22 @@ esp_err_t control_handler(httpd_req_t* req) {
             }
             new_fps = static_cast<int>(n);
         }
+        if (httpd_query_key_value(q, "xclk", f, sizeof f) == ESP_OK) {
+            char* end = nullptr;
+            const long n = strtol(f, &end, 10);
+            if (end == f || *end || n < 5 || n > 24) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "xclk takes 5 to 24 (MHz)");
+                return ESP_FAIL;
+            }
+            new_xclk = static_cast<int>(n);
+        }
+        if (httpd_query_key_value(q, "capture", f, sizeof f) == ESP_OK) {
+            if (strcmp(f, "0") && strcmp(f, "1")) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "capture takes 0 or 1");
+                return ESP_FAIL;
+            }
+            capture = f[0] == '1';
+        }
         if (httpd_query_key_value(q, "frame", fv, sizeof fv) == ESP_OK) {
             frame_given = true;
             for (const Frame& k : kFrames)
@@ -223,8 +265,9 @@ esp_err_t control_handler(httpd_req_t* req) {
             }
         }
     }
-    if (!given[0] && !given[1] && !frame_given && !new_fps) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&frame=<size>");
+    if (!given[0] && !given[1] && !frame_given && !new_fps && !new_xclk && capture < 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&xclk=5-24&capture=0|1&frame=<size>");
         return ESP_FAIL;
     }
     Preferences w;
@@ -240,13 +283,24 @@ esp_err_t control_handler(httpd_req_t* req) {
         fps = new_fps;
         w.putString("fps", String(new_fps));
     }
+    if (new_xclk) w.putString("xclk", String(new_xclk));
     w.end();
     if (s) {
         s->set_vflip(s, vflip);
         s->set_hmirror(s, hmirror);
     }
+    // a new clock restarts the camera (unless it is stopped: it starts with the new clock)
+    const bool reclock = new_xclk && new_xclk != xclk_mhz;
+    if (new_xclk) xclk_mhz = new_xclk;
+    if (capture == 0) camera_stop();
+    else if (capture == 1 && !cam_ok) camera_start();
+    else if (reclock && cam_ok) {
+        camera_stop();
+        camera_start();
+    }
     const bool reboot = new_frame && new_frame->size != frame;
-    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d fps %d frame %s (kept)%s", vflip, hmirror, fps,
+    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d fps %d xclk %d MHz capture %s frame %s (kept)%s", vflip,
+                  hmirror, fps, xclk_mhz, cam_ok ? "on" : "off",
                   new_frame ? new_frame->name : frame_name(frame), reboot ? ", rebooting for the frame size" : "");
     const esp_err_t r = status_handler(req);
     if (reboot) restart_at = millis() + 500;
