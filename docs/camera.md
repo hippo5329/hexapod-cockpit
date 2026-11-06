@@ -55,5 +55,10 @@ stream is retried every `reconnect_s` (2 s); the rate, bandwidth and reconnects 
 raw image: `ros2 run image_transport republish compressed raw --ros-args -r in/compressed:=camera/image_raw/compressed -r out:=camera/image_raw`.
 
 Calibration: print `camera/tools/make_checker_pdf.py out.pdf` at 100 % (check the 100 mm bar), glue it flat,
-republish raw (above), then `ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025 --ros-args -r image:=/camera/image_raw -r camera:=/camera`
-(the measured square size in m); save the YAML and pass it as `camera_info_file`.
+then either `camera/tools/calib_collect.py http://<camera ip>/capture <out dir>` (no display needed; it
+logs what each kept view adds, move the board until the ranges are covered) or, with a display, republish
+raw (above) and `ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025 --ros-args -r image:=/camera/image_raw -r camera:=/camera`
+(the measured square size in m). The YAML is `camera_info_file`; the launch default is
+`config/hexacam1_qvga.yaml` (this robot, 320x240: fx 287.9 fy 285.8, cx 160.7 cy 131.7, k1 -0.111,
+rms 0.37 px over 32 views). A calibration holds for its frame size only: at another size the bridge
+warns and falls back to the nominal pinhole.

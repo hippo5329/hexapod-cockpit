@@ -138,6 +138,11 @@ class CameraBridge(Node):
         img.data = data
         self.img_pub.publish(img)
         size = jpeg_size(data)
+        if self.calibrated and size and (self.info.width, self.info.height) != size:
+            # A calibration holds for its own frame size only (the camera's frame setting changed).
+            self.get_logger().warning(f"image {size[0]}x{size[1]} but the calibration is for "
+                                      f"{self.info.width}x{self.info.height}: nominal intrinsics instead")
+            self.calibrated = False
         if self.info is None or (not self.calibrated and size and (self.info.width, self.info.height) != size):
             if not size:
                 return
