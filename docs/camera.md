@@ -35,11 +35,20 @@ HTTP:
 | `:80/capture` | one JPEG |
 | `:80/status` | JSON: sensor, settings, the stream's measured rate and bandwidth, clients, RSSI, memory |
 | `:80/control?vflip=0\|1&hmirror=0\|1&fps=1-30&frame=<size>` | flip the image for the mount and pace the stream (applied at once), set the frame size (reboots: the buffers are sized at init); all kept in NVS (no USB needed); replies with the status. On the robot `fps=5`: the vision node uses 5, and the servos' load cuts the link to ~130-270 kbit/s (2026-11-06) |
+| `:80/control?wbuf=1\|0` | where the Wi-Fi driver's and lwIP's buffers go: `1` (default) internal RAM, `0` PSRAM (the Arduino core's own choice). Kept in NVS (`wbuf`); the board reboots, because the buffers are taken when the driver starts. `/status` reports `wbuf`, how many requests went to each (`wbuf_internal`, `wbuf_psram`) and `heap_min`, the lowest free internal heap since boot |
 | `POST :80/wifi` (form: `ssid`, `psk`, optional `syslog_ip`) | join another network without USB: kept and rebooted on trial; if the board has not joined within 60 s of the boot, the old ssid, psk and syslog_ip come back and it reboots. Send the body from a 0600 file (`curl --data-urlencode ssid@... --data-urlencode psk@...`), never argv |
 
 The stream has its own server: a stream holds its handler for as long as the client reads. Modem sleep is
-off (it adds 100+ ms to a frame). The log (syslog and the USB console): `boot`, the networks heard and every
+off (it adds 100+ ms to a frame). The log (syslog; `Serial` is UART0 on GPIO 43/44, not the USB port, which stays
+for esptool): `boot`, the networks heard and every
 Wi-Fi disconnect's reason, `wifi: up`, `stream` clients, a `health` line every 30 s.
+
+**Wi-Fi buffers in internal RAM** (`src/wifi_mem.cpp`): the core's prebuilt IDF has
+`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`, so the Wi-Fi driver and lwIP ask for PSRAM first, where their frames share
+the bus with the camera's DMA. The link wraps `heap_caps_{malloc,calloc,realloc}_prefer` (`-Wl,--wrap`): with `wbuf=1`
+a request that prefers PSRAM tries internal RAM first and falls back to PSRAM only when internal RAM is out. Both
+this and the USB console's removal were suspects in the link stalls on the robot (2026-11-06); the build is
+**not yet run on a board** (OTA to hexacam1 failed on its bad link), so neither is measured.
 
 Measured on the board: VGA at 24-28 fps from the sensor; on the robot's network QVGA quality 12 at 10 fps is
 ~5.5-6 kB a frame, ~0.5 Mbit/s.

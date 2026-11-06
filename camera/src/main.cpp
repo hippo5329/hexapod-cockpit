@@ -10,11 +10,13 @@
 //                            reboots, a new xclk restarts the camera); capture=0|1 stops/starts it (not kept)
 //   POST http://<ip>/wifi    ssid=..&psk=..[&syslog_ip=..]: another network, on trial (60 s, else back)
 //   /control?tx=2-20         Wi-Fi transmit power in dBm, kept (cheap boards lose frames at 20)
+//   /control?wbuf=1|0        Wi-Fi and lwIP buffers in internal RAM (1, default) or PSRAM (0), kept, reboots
 //
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
 // (OTA on 3232, none: no OTA), name (hostname, default hexacam), frame (qqvga, qvga, vga, svga, xga, hd;
 // default qvga), quality (JPEG 10-40, lower is better; default 12), fps (1-30; default 10), vflip,
-// hmirror (1: flip the image for the mount), xclk (the sensor clock, MHz, 5-24; default 20), syslog_ip,
+// hmirror (1: flip the image for the mount), xclk (the sensor clock, MHz, 5-24; default 20), tx_dbm,
+// wbuf (1: Wi-Fi buffers in internal RAM, wifi_mem.h; default 1), syslog_ip,
 // syslog_port (the robot firmware's syslog).
 #include <Arduino.h>
 #include <ArduinoOTA.h>
@@ -25,6 +27,7 @@
 #include <esp_wifi.h>
 
 #include "syslog.h"
+#include "wifi_mem.h"
 
 namespace {
 
@@ -78,6 +81,7 @@ void load_settings() {
     xclk_mhz = constrain(prefs.getString("xclk", "20").toInt(), 5, 24);
     wifi_trial = prefs.getBool("wifi_trial", false);
     tx_dbm = constrain(prefs.getString("tx_dbm", "20").toFloat(), 2.0f, 20.0f);
+    wifi_mem::internal_first = prefs.getString("wbuf", "1") != "0";
 }
 
 void apply_tx_power() { esp_wifi_set_max_tx_power(static_cast<int8_t>(tx_dbm * 4)); }
@@ -184,7 +188,7 @@ esp_err_t capture_handler(httpd_req_t* req) {
 float measured_fps = 0, measured_kbps = 0;
 
 esp_err_t status_handler(httpd_req_t* req) {
-    char j[640];
+    char j[768];
     sensor_t* s = cam_ok ? esp_camera_sensor_get() : nullptr;
     wifi_ps_type_t ps = WIFI_PS_NONE;
     esp_wifi_get_ps(&ps);
@@ -194,14 +198,17 @@ esp_err_t status_handler(httpd_req_t* req) {
              "{\"name\":\"%s\",\"sensor\":\"%s\",\"frame\":\"%s\",\"quality\":%d,\"fps_cap\":%d,\"fps\":%.1f,"
              "\"kbps\":%.0f,\"clients\":%u,\"frames\":%u,\"capture_fails\":%u,\"vflip\":%d,\"hmirror\":%d,"
              "\"rssi\":%d,\"uptime_s\":%u,\"heap\":%u,\"psram_free\":%u,\"temp_c\":%.1f,\"wifi_ps\":%d,"
-             "\"tx_dbm\":%.2f,\"channel\":%d,\"xclk_mhz\":%d,\"capture\":%d,\"ssid\":\"%s\",\"wifi_trial\":%d}",
+             "\"tx_dbm\":%.2f,\"channel\":%d,\"xclk_mhz\":%d,\"capture\":%d,\"ssid\":\"%s\",\"wifi_trial\":%d,"
+             "\"wbuf\":\"%s\",\"wbuf_internal\":%u,\"wbuf_psram\":%u,\"heap_min\":%u}",
              name.c_str(), sensor_name, frame_name(s ? static_cast<framesize_t>(s->status.framesize) : frame), quality,
              fps, measured_fps, measured_kbps, static_cast<unsigned>(stream_clients),
              static_cast<unsigned>(frames_sent), static_cast<unsigned>(capture_fails), vflip, hmirror,
              static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(millis() / 1000),
              static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()), temperatureRead(),
              static_cast<int>(ps), txp / 4.0, static_cast<int>(WiFi.channel()), xclk_mhz, cam_ok && !paused,
-             ssid.c_str(), wifi_trial);
+             ssid.c_str(), wifi_trial, wifi_mem::internal_first ? "internal" : "psram",
+             static_cast<unsigned>(wifi_mem::to_internal), static_cast<unsigned>(wifi_mem::to_psram),
+             static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
@@ -230,7 +237,7 @@ esp_err_t control_handler(httpd_req_t* req) {
     bool* const flags[] = {&vflip, &hmirror};
     char q[96], v[2][2] = {}, fv[8] = {};
     bool given[2] = {}, frame_given = false;
-    int new_fps = 0, new_xclk = 0, capture = -1;
+    int new_fps = 0, new_xclk = 0, capture = -1, new_wbuf = -1;
     float new_tx = 0;
     const Frame* new_frame = nullptr;
     if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
@@ -279,6 +286,13 @@ esp_err_t control_handler(httpd_req_t* req) {
             }
             capture = f[0] == '1';
         }
+        if (httpd_query_key_value(q, "wbuf", f, sizeof f) == ESP_OK) {
+            if (strcmp(f, "0") && strcmp(f, "1")) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "wbuf takes 1 (internal RAM) or 0 (PSRAM)");
+                return ESP_FAIL;
+            }
+            new_wbuf = f[0] == '1';
+        }
         if (httpd_query_key_value(q, "frame", fv, sizeof fv) == ESP_OK) {
             frame_given = true;
             for (const Frame& k : kFrames)
@@ -289,9 +303,9 @@ esp_err_t control_handler(httpd_req_t* req) {
             }
         }
     }
-    if (!given[0] && !given[1] && !frame_given && !new_fps && !new_xclk && capture < 0 && !new_tx) {
+    if (!given[0] && !given[1] && !frame_given && !new_fps && !new_xclk && capture < 0 && !new_tx && new_wbuf < 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&tx=2-20&xclk=5-24&capture=0|1&frame=<size>");
+                            "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&tx=2-20&xclk=5-24&capture=0|1&wbuf=0|1&frame=<size>");
         return ESP_FAIL;
     }
     Preferences w;
@@ -308,6 +322,7 @@ esp_err_t control_handler(httpd_req_t* req) {
         w.putString("fps", String(new_fps));
     }
     if (new_xclk) w.putString("xclk", String(new_xclk));
+    if (new_wbuf >= 0) w.putString("wbuf", new_wbuf ? "1" : "0");
     if (new_tx) {
         tx_dbm = new_tx;
         w.putString("tx_dbm", String(new_tx, 2));
@@ -327,10 +342,14 @@ esp_err_t control_handler(httpd_req_t* req) {
         camera_stop();
         camera_start();
     }
-    const bool reboot = new_frame && new_frame->size != frame;
-    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d fps %d tx %.1f dBm xclk %d MHz capture %s frame %s (kept)%s",
+    // the Wi-Fi buffers are taken at driver init: a new place needs a boot
+    const bool rewbuf = new_wbuf >= 0 && (new_wbuf == 1) != wifi_mem::internal_first;
+    const bool reboot = (new_frame && new_frame->size != frame) || rewbuf;
+    hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d fps %d tx %.1f dBm xclk %d MHz capture %s frame %s wbuf %s (kept)%s",
                   vflip, hmirror, fps, tx_dbm, xclk_mhz, cam_ok ? "on" : "off",
-                  new_frame ? new_frame->name : frame_name(frame), reboot ? ", rebooting for the frame size" : "");
+                  new_frame ? new_frame->name : frame_name(frame),
+                  (new_wbuf >= 0 ? new_wbuf == 1 : wifi_mem::internal_first) ? "internal" : "psram",
+                  reboot ? ", rebooting" : "");
     const esp_err_t r = status_handler(req);
     if (reboot) restart_at = millis() + 500;
     return r;
@@ -489,9 +508,9 @@ void setup() {
     WiFi.setAutoReconnect(true);
     WiFi.begin(ssid.c_str(), psk.c_str());
     apply_tx_power();
-    hexa_log::log(hexa_log::kNotice, "boot: hexacam %s %s, sensor %s, frame %s, quality %d, fps %d%s%s", __DATE__,
+    hexa_log::log(hexa_log::kNotice, "boot: hexacam %s %s, sensor %s, frame %s, quality %d, fps %d%s%s, wifi buffers in %s", __DATE__,
                   __TIME__, cam_ok ? sensor_name : "FAILED", frame_name(frame), quality, fps, vflip ? ", vflip" : "",
-                  hmirror ? ", hmirror" : "");
+                  hmirror ? ", hmirror" : "", wifi_mem::internal_first ? "internal RAM" : "PSRAM");
 }
 
 void loop() {
@@ -534,10 +553,13 @@ void loop() {
         measured_kbps = (bytes_sent - b0) * 8 / 1000.0f / dt;
         f0 = frames_sent;
         b0 = bytes_sent;
-        hexa_log::log(hexa_log::kInfo, "health: %s rssi %d dBm  stream %u client(s) %.1f fps %.0f kbit/s  fails %u  heap %u psram %u  %.1f C",
+        hexa_log::log(hexa_log::kInfo, "health: %s rssi %d dBm  stream %u client(s) %.1f fps %.0f kbit/s  fails %u  heap %u (min %u) psram %u  wbuf %u/%u  %.1f C",
                       up ? "up" : "DOWN", static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(stream_clients),
                       measured_fps, measured_kbps, static_cast<unsigned>(capture_fails),
-                      static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()), temperatureRead());
+                      static_cast<unsigned>(ESP.getFreeHeap()),
+                      static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
+                      static_cast<unsigned>(ESP.getFreePsram()), static_cast<unsigned>(wifi_mem::to_internal),
+                      static_cast<unsigned>(wifi_mem::to_psram), temperatureRead());
     }
     delay(5);
 }
