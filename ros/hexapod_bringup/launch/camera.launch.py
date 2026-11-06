@@ -15,7 +15,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("url", description="the camera board's stream: http://<camera ip>:81/stream"),
         DeclareLaunchArgument("camera_info_file", default_value=""),
-        DeclareLaunchArgument("hfov_deg", default_value="66.0"),
+        DeclareLaunchArgument("hfov_deg", default_value="58.4"),
         Node(package="hexapod_bringup", executable="camera_bridge", name="camera_bridge", output="screen",
              parameters=[{"url": LaunchConfiguration("url"),
                           "camera_info_file": LaunchConfiguration("camera_info_file"),

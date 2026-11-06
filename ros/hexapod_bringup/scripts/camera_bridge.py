@@ -15,7 +15,7 @@ Parameters:
   url              the board's stream, http://<camera ip>:81/stream (required)
   frame_id         camera_optical_frame
   camera_info_file a camera_calibration YAML (empty: nominal)
-  hfov_deg         66.0, the nominal horizontal field of view for the nominal intrinsics
+  hfov_deg         58.4, the horizontal field of view for the nominal intrinsics (measured: fx 286 at 320 px)
   latency_s        0.0
   reconnect_s      2.0
 """
@@ -112,7 +112,7 @@ class CameraBridge(Node):
             raise SystemExit("camera_bridge: set url (http://<camera ip>:81/stream)")
         self.frame_id = self.declare_parameter("frame_id", "camera_optical_frame").value
         info_file = self.declare_parameter("camera_info_file", "").value
-        self.hfov = float(self.declare_parameter("hfov_deg", 66.0).value)
+        self.hfov = float(self.declare_parameter("hfov_deg", 58.4).value)
         self.latency = float(self.declare_parameter("latency_s", 0.0).value)
         self.reconnect = float(self.declare_parameter("reconnect_s", 2.0).value)
         self.info = info_from_yaml(info_file) if info_file else None

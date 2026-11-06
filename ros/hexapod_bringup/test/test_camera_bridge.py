@@ -71,7 +71,7 @@ def test_stream_becomes_compressed_images_and_info():
         stamps = {(m.header.stamp.sec, m.header.stamp.nanosec) for m in imgs}
         assert any((i.header.stamp.sec, i.header.stamp.nanosec) in stamps for i in infos), "info shares the image's stamp"
         f = infos[0].k[0]
-        assert abs(f - 160 / 0.6494075932) < 0.5, f"nominal focal length for 66 deg over 320 px: {f}"
+        assert abs(f - 160 / 0.5588811096) < 0.5, f"nominal focal length for 58.4 deg over 320 px: {f}"
     finally:
         node.destroy_node()
         rclpy.shutdown()

@@ -50,7 +50,7 @@ Measured on the board: VGA at 24-28 fps from the sensor; on the robot's network 
 `camera_bridge` publishes each JPEG as it came (no decoding) on `camera/image_raw/compressed`
 (`sensor_msgs/CompressedImage`, format `jpeg`, image_transport's compressed transport) and
 `camera/camera_info` with the same stamp: from a camera_calibration YAML, or until there is one a nominal
-pinhole from `hfov_deg` (66) and the JPEG's size. Stamps are the host's receive time less `latency_s`. A lost
+pinhole from `hfov_deg` (58.4: fx 286 px at 320 px, measured from the checkerboard at 0.5 m and 1 m, the same within 1 %) and the JPEG's size. Stamps are the host's receive time less `latency_s`. A lost
 stream is retried every `reconnect_s` (2 s); the rate, bandwidth and reconnects are logged every 10 s. For a
 raw image: `ros2 run image_transport republish compressed raw --ros-args -r in/compressed:=camera/image_raw/compressed -r out:=camera/image_raw`.
 
