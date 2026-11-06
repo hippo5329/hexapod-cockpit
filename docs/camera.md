@@ -35,6 +35,7 @@ HTTP:
 | `:80/capture` | one JPEG |
 | `:80/status` | JSON: sensor, settings, the stream's measured rate and bandwidth, clients, RSSI, memory |
 | `:80/control?vflip=0\|1&hmirror=0\|1&fps=1-30&frame=<size>` | flip the image for the mount and pace the stream (applied at once), set the frame size (reboots: the buffers are sized at init); all kept in NVS (no USB needed); replies with the status. On the robot `fps=5`: the vision node uses 5, and the servos' load cuts the link to ~130-270 kbit/s (2026-11-06) |
+| `POST :80/wifi` (form: `ssid`, `psk`, optional `syslog_ip`) | join another network without USB: kept and rebooted on trial; if the board has not joined within 60 s of the boot, the old ssid, psk and syslog_ip come back and it reboots. Send the body from a 0600 file (`curl --data-urlencode ssid@... --data-urlencode psk@...`), never argv |
 
 The stream has its own server: a stream holds its handler for as long as the client reads. Modem sleep is
 off (it adds 100+ ms to a frame). The log (syslog and the USB console): `boot`, the networks heard and every

@@ -8,6 +8,7 @@
 //                            chip temperature
 //   http://<ip>/control      ?vflip=0|1&hmirror=0|1&fps=1-30&xclk=5-24&frame=<size>: kept in NVS (a new size
 //                            reboots, a new xclk restarts the camera); capture=0|1 stops/starts it (not kept)
+//   POST http://<ip>/wifi    ssid=..&psk=..[&syslog_ip=..]: another network, on trial (60 s, else back)
 //
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
 // (OTA on 3232, none: no OTA), name (hostname, default hexacam), frame (qqvga, qvga, vga, svga, xga, hd;
@@ -36,6 +37,10 @@ bool cam_ok = false, net_started = false;
 int xclk_mhz = 20;
 // /control?capture=0 stops the camera (its clock and DMA too) for a Wi-Fi test; the stream then idles.
 volatile bool paused = false, in_grab = false;
+// A Wi-Fi change from POST /wifi is on trial until the board joins the new network (see trial_loop).
+const char* const kTrialKeys[] = {"ssid", "psk", "syslog_ip"};
+constexpr uint32_t kTrialMs = 60000;
+bool wifi_trial = false;
 
 // What the stream has delivered, for /status and the health line.
 volatile uint32_t frames_sent = 0, bytes_sent = 0, stream_clients = 0, capture_fails = 0;
@@ -67,6 +72,7 @@ void load_settings() {
     vflip = prefs.getString("vflip", "0") == "1";
     hmirror = prefs.getString("hmirror", "0") == "1";
     xclk_mhz = constrain(prefs.getString("xclk", "20").toInt(), 5, 24);
+    wifi_trial = prefs.getBool("wifi_trial", false);
 }
 
 // The common ESP32-S3-CAM pin map (ESP32-S3-EYE / Freenove layout), checked on the board: OV3660.
@@ -181,13 +187,14 @@ esp_err_t status_handler(httpd_req_t* req) {
              "{\"name\":\"%s\",\"sensor\":\"%s\",\"frame\":\"%s\",\"quality\":%d,\"fps_cap\":%d,\"fps\":%.1f,"
              "\"kbps\":%.0f,\"clients\":%u,\"frames\":%u,\"capture_fails\":%u,\"vflip\":%d,\"hmirror\":%d,"
              "\"rssi\":%d,\"uptime_s\":%u,\"heap\":%u,\"psram_free\":%u,\"temp_c\":%.1f,\"wifi_ps\":%d,"
-             "\"tx_dbm\":%.2f,\"channel\":%d,\"xclk_mhz\":%d,\"capture\":%d}",
+             "\"tx_dbm\":%.2f,\"channel\":%d,\"xclk_mhz\":%d,\"capture\":%d,\"ssid\":\"%s\",\"wifi_trial\":%d}",
              name.c_str(), sensor_name, frame_name(s ? static_cast<framesize_t>(s->status.framesize) : frame), quality,
              fps, measured_fps, measured_kbps, static_cast<unsigned>(stream_clients),
              static_cast<unsigned>(frames_sent), static_cast<unsigned>(capture_fails), vflip, hmirror,
              static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(millis() / 1000),
              static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()), temperatureRead(),
-             static_cast<int>(ps), txp / 4.0, static_cast<int>(WiFi.channel()), xclk_mhz, cam_ok && !paused);
+             static_cast<int>(ps), txp / 4.0, static_cast<int>(WiFi.channel()), xclk_mhz, cam_ok && !paused,
+             ssid.c_str(), wifi_trial);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
@@ -307,6 +314,101 @@ esp_err_t control_handler(httpd_req_t* req) {
     return r;
 }
 
+// %XX and '+' in a form value, in place.
+void url_decode(char* v) {
+    char* o = v;
+    for (const char* i = v; *i; ++i) {
+        if (*i == '+') *o++ = ' ';
+        else if (*i == '%' && isxdigit(static_cast<unsigned char>(i[1])) && isxdigit(static_cast<unsigned char>(i[2]))) {
+            const char h[3] = {i[1], i[2], 0};
+            *o++ = static_cast<char>(strtol(h, nullptr, 16));
+            i += 2;
+        } else *o++ = *i;
+    }
+    *o = 0;
+}
+
+// POST /wifi, form body ssid=..&psk=..[&syslog_ip=..]: join another network, no USB. The values are kept
+// and the board reboots on trial: if it has not joined the new network 60 s after boot, the old ssid,
+// psk and syslog_ip are put back and it reboots again. Nothing of the body is logged but the ssid.
+esp_err_t wifi_handler(httpd_req_t* req) {
+    char body[256];
+    const int len = req->content_len;
+    if (len <= 0 || len >= static_cast<int>(sizeof body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body: ssid=..&psk=..[&syslog_ip=..]");
+        return ESP_FAIL;
+    }
+    for (int got = 0; got < len;) {
+        const int r = httpd_req_recv(req, body + got, len - got);
+        if (r <= 0) return ESP_FAIL;
+        got += r;
+    }
+    body[len] = 0;
+    char ss[100] = {}, pk[200] = {}, ip[48] = {};
+    const bool has_ip = httpd_query_key_value(body, "syslog_ip", ip, sizeof ip) == ESP_OK;
+    if (httpd_query_key_value(body, "ssid", ss, sizeof ss) != ESP_OK ||
+        httpd_query_key_value(body, "psk", pk, sizeof pk) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ssid and psk are needed (psk may be empty: an open network)");
+        return ESP_FAIL;
+    }
+    url_decode(ss);
+    url_decode(pk);
+    url_decode(ip);
+    const size_t sl = strlen(ss), pl = strlen(pk);
+    IPAddress addr;
+    if (sl < 1 || sl > 32 || (pl && (pl < 8 || pl > 63)) || (has_ip && !addr.fromString(ip))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ssid 1-32 chars, psk empty or 8-63, syslog_ip an IPv4 address");
+        return ESP_FAIL;
+    }
+    Preferences w;
+    w.begin("hexacam", false);
+    // A second change before the first one joined keeps the first one's old values: those worked.
+    if (!w.getBool("wifi_trial", false)) {
+        for (const char* k : kTrialKeys) {
+            const String prev = String("prev_") + k;
+            if (w.isKey(k)) w.putString(prev.c_str(), w.getString(k, ""));
+            else w.remove(prev.c_str());
+        }
+        w.putBool("wifi_trial", true);
+    }
+    w.putString("ssid", ss);
+    w.putString("psk", pk);
+    if (has_ip) w.putString("syslog_ip", ip);
+    w.end();
+    hexa_log::log(hexa_log::kNotice, "wifi: '%s' on trial after the reboot (60 s, else the old network)", ss);
+    httpd_resp_set_type(req, "text/plain");
+    const esp_err_t r = httpd_resp_sendstr(req, "ok: rebooting to join the new network on trial\n");
+    restart_at = millis() + 500;
+    return r;
+}
+
+// The trial of a Wi-Fi change: joined = kept; 60 s without = the old values back and a reboot.
+void trial_loop(bool up) {
+    if (!wifi_trial) return;
+    Preferences w;
+    if (up) {
+        w.begin("hexacam", false);
+        for (const char* k : kTrialKeys) w.remove((String("prev_") + k).c_str());
+        w.remove("wifi_trial");
+        w.end();
+        wifi_trial = false;
+        hexa_log::log(hexa_log::kNotice, "wifi: the new network joined; kept");
+    } else if (millis() > kTrialMs) {
+        w.begin("hexacam", false);
+        for (const char* k : kTrialKeys) {
+            const String prev = String("prev_") + k;
+            if (w.isKey(prev.c_str())) w.putString(k, w.getString(prev.c_str(), ""));
+            else w.remove(k);
+            w.remove(prev.c_str());
+        }
+        w.remove("wifi_trial");
+        w.end();
+        Serial.println("wifi: no network in 60 s with the new settings; the old ones put back, rebooting");
+        delay(100);
+        ESP.restart();
+    }
+}
+
 void http_begin() {
     // Two servers: a stream holds its handler for as long as the client reads, so /status and
     // /capture have their own (the esp32-camera examples do the same, stream on port 81).
@@ -321,6 +423,8 @@ void http_begin() {
         httpd_register_uri_handler(ctl, &cap);
         httpd_uri_t ctrl = {"/control", HTTP_GET, control_handler, nullptr};
         httpd_register_uri_handler(ctl, &ctrl);
+        httpd_uri_t wifi = {"/wifi", HTTP_POST, wifi_handler, nullptr};
+        httpd_register_uri_handler(ctl, &wifi);
     }
     httpd_config_t sc = HTTPD_DEFAULT_CONFIG();
     sc.server_port = 81;
@@ -370,6 +474,7 @@ void setup() {
 void loop() {
     if (restart_at && static_cast<int32_t>(millis() - restart_at) >= 0) ESP.restart();
     const bool up = WiFi.status() == WL_CONNECTED;
+    trial_loop(up);
     hexa_log::loop(up);
     if (up && !net_started) {
         net_started = true;
