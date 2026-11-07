@@ -13,6 +13,9 @@
 //   POST http://<ip>/wifi    ssid=..&psk=..[&syslog_ip=..]: another network, on trial (60 s, else back)
 //   /control?tx=2-20         Wi-Fi transmit power in dBm, kept (cheap boards lose frames at 20)
 //   /control?wbuf=1|0        Wi-Fi and lwIP buffers in internal RAM (1, default) or PSRAM (0), kept, reboots
+//   /control?ps=0|1|2|kick   Wi-Fi power save now (not kept): 0 none (the boot's), 1 min modem, 2 max modem;
+//                            kick: 1 then 0, so the AP hears the station is awake (see ps_kick); /status reset:
+//                            why the board last restarted (esp_reset_reason)
 //   /control?lidar_rx=<gpio|-1>&lidar_ip=<a.b.c.d>&lidar_port=<p>&lidar_baud=<b>: the LiDAR forwarder
 //                            (lidar_fwd.h), any of them, kept, reboots
 //
@@ -154,6 +157,36 @@ void load_settings() {
 
 void apply_tx_power() { esp_wifi_set_max_tx_power(static_cast<int8_t>(tx_dbm * 4)); }
 
+// Power save on for a moment, then off (/control?ps=kick): leaving power save sends the AP a null frame with
+// the power-management bit clear. A test aid: on two different APs this board's uplink leaves only at beacons
+// (pings a ~103 ms sawtooth, LiDAR datagrams in the same bursts) while esp_wifi_get_ps() says NONE, and
+// neither a kick nor ps=1/0 nor tx power 2-20 dBm changed it (2026-11-07).
+void ps_kick() {
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    delay(200);  // two beacons
+    esp_wifi_set_ps(WIFI_PS_NONE);
+}
+
+const char* ps_name(int ps) { return ps == 0 ? "none" : ps == 1 ? "min modem" : "max modem"; }
+
+const char* reset_name(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON: return "power on";
+        case ESP_RST_EXT: return "external pin";
+        case ESP_RST_SW: return "software";
+        case ESP_RST_PANIC: return "panic";
+        case ESP_RST_INT_WDT: return "interrupt watchdog";
+        case ESP_RST_TASK_WDT: return "task watchdog";
+        case ESP_RST_WDT: return "other watchdog";
+        case ESP_RST_DEEPSLEEP: return "deep sleep";
+        case ESP_RST_BROWNOUT: return "brownout";
+        case ESP_RST_SDIO: return "sdio";
+        case ESP_RST_USB: return "usb";
+        case ESP_RST_JTAG: return "jtag";
+        default: return "unknown";
+    }
+}
+
 // The common ESP32-S3-CAM pin map (ESP32-S3-EYE / Freenove layout), checked on the board: OV3660.
 bool camera_begin() {
     camera_config_t c = {};
@@ -268,7 +301,7 @@ esp_err_t status_handler(httpd_req_t* req) {
              "\"rssi\":%d,\"uptime_s\":%u,\"heap\":%u,\"psram_free\":%u,\"wifi_ps\":%d,"
              "\"tx_dbm\":%.2f,\"channel\":%d,\"xclk_mhz\":%d,\"capture\":%d,\"ssid\":\"%s\",\"wifi_trial\":%d,"
              "\"wbuf\":\"%s\",\"wbuf_internal\":%u,\"wbuf_psram\":%u,\"heap_min\":%u,\"uart\":\"%s\",\"uart_bytes\":%u,\"uart_err\":[%u,%u,%u],"
-             "\"lidar_rx\":%d,\"lidar_ip\":\"%s\",\"lidar_port\":%u,\"lidar_bytes\":%u,\"lidar_packets\":%u,\"lidar_err\":%u}",
+             "\"lidar_rx\":%d,\"lidar_ip\":\"%s\",\"lidar_port\":%u,\"lidar_bytes\":%u,\"lidar_packets\":%u,\"lidar_err\":%u,\"reset\":\"%s\"}",
              name.c_str(), sensor_name, frame_name(s ? static_cast<framesize_t>(s->status.framesize) : frame), quality,
              fps, measured_fps, measured_kbps, static_cast<unsigned>(stream_clients),
              static_cast<unsigned>(frames_sent), static_cast<unsigned>(capture_fails), vflip, hmirror,
@@ -281,7 +314,7 @@ esp_err_t status_handler(httpd_req_t* req) {
              static_cast<unsigned>(uart_bytes), static_cast<unsigned>(uart_err_ovf), static_cast<unsigned>(uart_err_full),
              static_cast<unsigned>(uart_err_frame), lidar_rx, lidar_ip.toString().c_str(), static_cast<unsigned>(lidar_port),
              static_cast<unsigned>(lidar_fwd::bytes()), static_cast<unsigned>(lidar_fwd::packets()),
-             static_cast<unsigned>(lidar_fwd::errors()));
+             static_cast<unsigned>(lidar_fwd::errors()), reset_name(esp_reset_reason()));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
@@ -310,7 +343,7 @@ esp_err_t control_handler(httpd_req_t* req) {
     bool* const flags[] = {&vflip, &hmirror};
     char q[192], v[2][2] = {}, fv[8] = {};
     bool given[2] = {}, frame_given = false;
-    int new_fps = 0, new_xclk = 0, capture = -1, new_wbuf = -1;
+    int new_fps = 0, new_xclk = 0, capture = -1, new_wbuf = -1, new_ps = -1;  // new_ps 3: kick
     float new_tx = 0;
     const Frame* new_frame = nullptr;
     if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
@@ -385,6 +418,14 @@ esp_err_t control_handler(httpd_req_t* req) {
             }
             capture = f[0] == '1';
         }
+        if (httpd_query_key_value(q, "ps", f, sizeof f) == ESP_OK) {
+            if (!strcmp(f, "kick")) new_ps = 3;
+            else if (!strcmp(f, "0") || !strcmp(f, "1") || !strcmp(f, "2")) new_ps = f[0] - '0';
+            else {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ps takes 0 (none), 1 (min modem), 2 (max modem) or kick");
+                return ESP_FAIL;
+            }
+        }
         if (httpd_query_key_value(q, "wbuf", f, sizeof f) == ESP_OK) {
             if (strcmp(f, "0") && strcmp(f, "1")) {
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "wbuf takes 1 (internal RAM) or 0 (PSRAM)");
@@ -436,6 +477,9 @@ esp_err_t control_handler(httpd_req_t* req) {
     // a new clock restarts the camera (unless it is stopped: it starts with the new clock)
     const bool reclock = new_xclk && new_xclk != xclk_mhz;
     if (new_xclk) xclk_mhz = new_xclk;
+    if (new_ps == 3) ps_kick();
+    else if (new_ps >= 0) esp_wifi_set_ps(new_ps == 0 ? WIFI_PS_NONE : new_ps == 1 ? WIFI_PS_MIN_MODEM : WIFI_PS_MAX_MODEM);
+    if (new_ps >= 0) hexa_log::log(hexa_log::kNotice, "control: power save %s (not kept)", new_ps == 3 ? "kick" : ps_name(new_ps));
     if (capture == 0) camera_stop();
     else if (capture == 1 && !cam_ok) camera_start();
     else if (reclock && cam_ok) {
@@ -650,8 +694,8 @@ void setup() {
     WiFi.begin(ssid.c_str(), psk.c_str());
     apply_tx_power();
     lidar_fwd::begin(lidar_rx, lidar_ip, lidar_port, lidar_baud);  // settings only; started once the network is up
-    hexa_log::log(hexa_log::kNotice, "boot: hexacam %s %s, sensor %s, frame %s, quality %d, fps %d%s%s, wifi buffers in %s", __DATE__,
-                  __TIME__, cam_ok ? sensor_name : "FAILED", frame_name(frame), quality, fps, vflip ? ", vflip" : "",
+    hexa_log::log(hexa_log::kNotice, "boot: hexacam %s %s (reset: %s), sensor %s, frame %s, quality %d, fps %d%s%s, wifi buffers in %s", __DATE__,
+                  __TIME__, reset_name(esp_reset_reason()), cam_ok ? sensor_name : "FAILED", frame_name(frame), quality, fps, vflip ? ", vflip" : "",
                   hmirror ? ", hmirror" : "", wifi_mem::internal_first ? "internal RAM" : "PSRAM");
 }
 
