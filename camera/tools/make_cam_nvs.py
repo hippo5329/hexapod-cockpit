@@ -15,6 +15,9 @@ KEY=VALUE lines (# comments allowed), NVS namespace `hexacam` (camera/src/main.c
     syslog_ip, syslog_port  the syslog sink (port default 5140)
     xclk          the sensor clock, MHz 5-24                 (default 20)
     tx_dbm        Wi-Fi transmit power, dBm 2-20             (default 20; cheap boards lose frames at 20)
+    lidar_rx      the GPIO wired to the LiDAR's TX (UART2)   (default -1: no forwarder)
+    lidar_ip, lidar_port  the robot computer's ldlidar udp_server (port default 8889)
+    lidar_baud    the LiDAR's baud                           (default 230400, LD19)
 
 The file holds the Wi-Fi key and the OTA password: keep it private (0600) and out of any public
 repository. The image goes to the `nvs` partition (0x9000, 0x5000 bytes). Needs the
@@ -29,7 +32,7 @@ import tempfile
 
 NVS_SIZE = 0x5000
 KEYS = {"ssid", "psk", "ota_pw", "name", "frame", "quality", "fps", "vflip", "hmirror", "syslog_ip", "syslog_port",
-        "xclk", "tx_dbm"}
+        "xclk", "tx_dbm", "lidar_rx", "lidar_ip", "lidar_port", "lidar_baud"}
 FRAMES = {"qqvga", "qvga", "vga", "svga", "xga", "hd"}
 
 

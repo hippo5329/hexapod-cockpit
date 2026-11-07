@@ -13,13 +13,16 @@
 //   POST http://<ip>/wifi    ssid=..&psk=..[&syslog_ip=..]: another network, on trial (60 s, else back)
 //   /control?tx=2-20         Wi-Fi transmit power in dBm, kept (cheap boards lose frames at 20)
 //   /control?wbuf=1|0        Wi-Fi and lwIP buffers in internal RAM (1, default) or PSRAM (0), kept, reboots
+//   /control?lidar_rx=<gpio|-1>&lidar_ip=<a.b.c.d>&lidar_port=<p>&lidar_baud=<b>: the LiDAR forwarder
+//                            (lidar_fwd.h), any of them, kept, reboots
 //
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
 // (OTA on 3232, none: no OTA), name (hostname, default hexacam), frame (qqvga, qvga, vga, svga, xga, hd;
 // default qvga), quality (JPEG 10-40, lower is better; default 12), fps (1-30; default 10), vflip,
 // hmirror (1: flip the image for the mount), xclk (the sensor clock, MHz, 5-24; default 20), tx_dbm,
 // wbuf (1: Wi-Fi buffers in internal RAM, wifi_mem.h; default 1), syslog_ip,
-// syslog_port (the robot firmware's syslog), uart (the link to the robot, below; default echo).
+// syslog_port (the robot firmware's syslog), uart (the link to the robot, below; default echo),
+// lidar_rx, lidar_ip, lidar_port, lidar_baud (the LiDAR forwarder, lidar_fwd.h; off without lidar_rx and lidar_ip).
 //
 // The robot's UART: UART1, RX GPIO1 <- the robot's GPIO32, TX GPIO2 -> its GPIO33, 1.5 Mbaud 8N1
 // (wired 2026-11-07). NVS `uart`: echo (every byte sent back: the robot's console `uart` test checks
@@ -34,6 +37,7 @@
 
 #include "syslog.h"
 #include "irq_watch.h"
+#include "lidar_fwd.h"
 #include "wifi_mem.h"
 
 namespace {
@@ -63,6 +67,12 @@ volatile uint32_t frames_sent = 0, bytes_sent = 0, stream_clients = 0, capture_f
 constexpr int kUartRx = 1, kUartTx = 2;
 constexpr uint32_t kUartBaud = 1500000;
 String uart_mode = "echo";
+
+// The LiDAR forwarder (lidar_fwd.h).
+int lidar_rx = -1;
+IPAddress lidar_ip;
+uint16_t lidar_port = 8889;
+uint32_t lidar_baud = 230400;
 volatile uint32_t uart_bytes = 0;
 // The driver's receive errors (onReceiveError): where the robot's test loses bytes, if here.
 volatile uint32_t uart_err_ovf = 0, uart_err_full = 0, uart_err_frame = 0;
@@ -135,6 +145,10 @@ void load_settings() {
     wifi_mem::internal_first = prefs.getString("wbuf", "1") != "0";
     uart_mode = prefs.getString("uart", "echo");
     if (uart_mode != "echo" && uart_mode != "off") uart_mode = "echo";
+    lidar_rx = prefs.getString("lidar_rx", "-1").toInt();
+    if (!lidar_ip.fromString(prefs.getString("lidar_ip", ""))) lidar_ip = IPAddress(0, 0, 0, 0);
+    lidar_port = constrain(prefs.getString("lidar_port", "8889").toInt(), 1, 65535);
+    lidar_baud = constrain(prefs.getString("lidar_baud", "230400").toInt(), 9600, 2000000);
 }
 
 void apply_tx_power() { esp_wifi_set_max_tx_power(static_cast<int8_t>(tx_dbm * 4)); }
@@ -241,7 +255,7 @@ esp_err_t capture_handler(httpd_req_t* req) {
 float measured_fps = 0, measured_kbps = 0;
 
 esp_err_t status_handler(httpd_req_t* req) {
-    char j[1024];
+    char j[1280];
     sensor_t* s = cam_ok ? esp_camera_sensor_get() : nullptr;
     wifi_ps_type_t ps = WIFI_PS_NONE;
     esp_wifi_get_ps(&ps);
@@ -252,7 +266,8 @@ esp_err_t status_handler(httpd_req_t* req) {
              "\"kbps\":%.0f,\"clients\":%u,\"frames\":%u,\"capture_fails\":%u,\"vflip\":%d,\"hmirror\":%d,"
              "\"rssi\":%d,\"uptime_s\":%u,\"heap\":%u,\"psram_free\":%u,\"wifi_ps\":%d,"
              "\"tx_dbm\":%.2f,\"channel\":%d,\"xclk_mhz\":%d,\"capture\":%d,\"ssid\":\"%s\",\"wifi_trial\":%d,"
-             "\"wbuf\":\"%s\",\"wbuf_internal\":%u,\"wbuf_psram\":%u,\"heap_min\":%u,\"uart\":\"%s\",\"uart_bytes\":%u,\"uart_err\":[%u,%u,%u]}",
+             "\"wbuf\":\"%s\",\"wbuf_internal\":%u,\"wbuf_psram\":%u,\"heap_min\":%u,\"uart\":\"%s\",\"uart_bytes\":%u,\"uart_err\":[%u,%u,%u],"
+             "\"lidar_rx\":%d,\"lidar_ip\":\"%s\",\"lidar_port\":%u,\"lidar_bytes\":%u,\"lidar_packets\":%u,\"lidar_err\":%u}",
              name.c_str(), sensor_name, frame_name(s ? static_cast<framesize_t>(s->status.framesize) : frame), quality,
              fps, measured_fps, measured_kbps, static_cast<unsigned>(stream_clients),
              static_cast<unsigned>(frames_sent), static_cast<unsigned>(capture_fails), vflip, hmirror,
@@ -263,7 +278,9 @@ esp_err_t status_handler(httpd_req_t* req) {
              static_cast<unsigned>(wifi_mem::to_internal), static_cast<unsigned>(wifi_mem::to_psram),
              static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)), uart_mode.c_str(),
              static_cast<unsigned>(uart_bytes), static_cast<unsigned>(uart_err_ovf), static_cast<unsigned>(uart_err_full),
-             static_cast<unsigned>(uart_err_frame));
+             static_cast<unsigned>(uart_err_frame), lidar_rx, lidar_ip.toString().c_str(), static_cast<unsigned>(lidar_port),
+             static_cast<unsigned>(lidar_fwd::bytes()), static_cast<unsigned>(lidar_fwd::packets()),
+             static_cast<unsigned>(lidar_fwd::errors()));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
@@ -290,12 +307,38 @@ void camera_start() {
 esp_err_t control_handler(httpd_req_t* req) {
     const char* const keys[] = {"vflip", "hmirror"};
     bool* const flags[] = {&vflip, &hmirror};
-    char q[96], v[2][2] = {}, fv[8] = {};
+    char q[192], v[2][2] = {}, fv[8] = {};
     bool given[2] = {}, frame_given = false;
     int new_fps = 0, new_xclk = 0, capture = -1, new_wbuf = -1;
     float new_tx = 0;
     const Frame* new_frame = nullptr;
     if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
+        // The LiDAR forwarder's settings: on their own, kept, and a reboot applies them.
+        const char* const lkeys[] = {"lidar_rx", "lidar_ip", "lidar_port", "lidar_baud"};
+        char lv[4][20] = {};
+        bool lany = false;
+        for (int i = 0; i < 4; i++) lany |= httpd_query_key_value(q, lkeys[i], lv[i], sizeof lv[i]) == ESP_OK;
+        if (lany) {
+            IPAddress ip;
+            const bool ok = (!lv[0][0] || (atoi(lv[0]) >= -1 && atoi(lv[0]) <= 48)) && (!lv[1][0] || ip.fromString(lv[1])) &&
+                            (!lv[2][0] || (atoi(lv[2]) >= 1 && atoi(lv[2]) <= 65535)) &&
+                            (!lv[3][0] || (atoi(lv[3]) >= 9600 && atoi(lv[3]) <= 2000000));
+            if (!ok) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                    "lidar_rx -1..48, lidar_ip a.b.c.d, lidar_port 1-65535, lidar_baud 9600-2000000");
+                return ESP_FAIL;
+            }
+            Preferences w;
+            w.begin("hexacam", false);
+            for (int i = 0; i < 4; i++)
+                if (lv[i][0]) w.putString(lkeys[i], lv[i]);
+            w.end();
+            hexa_log::log(hexa_log::kNotice, "control: lidar rx %s ip %s port %s baud %s (kept), rebooting",
+                          lv[0][0] ? lv[0] : "-", lv[1][0] ? lv[1] : "-", lv[2][0] ? lv[2] : "-", lv[3][0] ? lv[3] : "-");
+            const esp_err_t r = status_handler(req);
+            restart_at = millis() + 500;
+            return r;
+        }
         for (int i = 0; i < 2; i++) {
             char val[4];
             if (httpd_query_key_value(q, keys[i], val, sizeof val) != ESP_OK) continue;
@@ -360,7 +403,8 @@ esp_err_t control_handler(httpd_req_t* req) {
     }
     if (!given[0] && !given[1] && !frame_given && !new_fps && !new_xclk && capture < 0 && !new_tx && new_wbuf < 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&tx=2-20&xclk=5-24&capture=0|1&wbuf=0|1&frame=<size>");
+                            "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&tx=2-20&xclk=5-24&capture=0|1&wbuf=0|1&frame=<size>"
+                            " or lidar_rx=..&lidar_ip=..&lidar_port=..&lidar_baud=..");
         return ESP_FAIL;
     }
     Preferences w;
@@ -568,6 +612,7 @@ void setup() {
     WiFi.setAutoReconnect(true);
     WiFi.begin(ssid.c_str(), psk.c_str());
     apply_tx_power();
+    lidar_fwd::begin(lidar_rx, lidar_ip, lidar_port, lidar_baud);  // drops bytes until the radio is up
     hexa_log::log(hexa_log::kNotice, "boot: hexacam %s %s, sensor %s, frame %s, quality %d, fps %d%s%s, wifi buffers in %s", __DATE__,
                   __TIME__, cam_ok ? sensor_name : "FAILED", frame_name(frame), quality, fps, vflip ? ", vflip" : "",
                   hmirror ? ", hmirror" : "", wifi_mem::internal_first ? "internal RAM" : "PSRAM");
@@ -592,7 +637,10 @@ void loop() {
             ArduinoOTA.setPassword(ota_pw.c_str());
             ArduinoOTA.setMdnsEnabled(false);
             ArduinoOTA.setHostname(name.c_str());
-            ArduinoOTA.onStart([]() { hexa_log::log(hexa_log::kNotice, "ota: update started"); });
+            ArduinoOTA.onStart([]() {
+                lidar_fwd::pause();  // nothing on the radio but the update
+                hexa_log::log(hexa_log::kNotice, "ota: update started");
+            });
             ArduinoOTA.onEnd([]() {
                 hexa_log::log(hexa_log::kNotice, "ota: update written, rebooting");
                 delay(100);
@@ -615,7 +663,7 @@ void loop() {
         measured_kbps = (bytes_sent - b0) * 8 / 1000.0f / dt;
         f0 = frames_sent;
         b0 = bytes_sent;
-        hexa_log::log(hexa_log::kInfo, "health: %s rssi %d dBm  stream %u client(s) %.1f fps %.0f kbit/s  fails %u  heap %u (min %u) psram %u  wbuf %u/%u  uart %s %u B err %u/%u/%u  flash ops %u max %u us",
+        hexa_log::log(hexa_log::kInfo, "health: %s rssi %d dBm  stream %u client(s) %.1f fps %.0f kbit/s  fails %u  heap %u (min %u) psram %u  wbuf %u/%u  uart %s %u B err %u/%u/%u  lidar %u B %u pkt err %u  flash ops %u max %u us",
                       up ? "up" : "DOWN", static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(stream_clients),
                       measured_fps, measured_kbps, static_cast<unsigned>(capture_fails),
                       static_cast<unsigned>(ESP.getFreeHeap()),
@@ -623,7 +671,9 @@ void loop() {
                       static_cast<unsigned>(ESP.getFreePsram()), static_cast<unsigned>(wifi_mem::to_internal),
                       static_cast<unsigned>(wifi_mem::to_psram), uart_mode.c_str(), static_cast<unsigned>(uart_bytes),
                       static_cast<unsigned>(uart_err_ovf), static_cast<unsigned>(uart_err_full),
-                      static_cast<unsigned>(uart_err_frame), static_cast<unsigned>(irq_watch::flash_ops()),
+                      static_cast<unsigned>(uart_err_frame), static_cast<unsigned>(lidar_fwd::bytes()),
+                      static_cast<unsigned>(lidar_fwd::packets()), static_cast<unsigned>(lidar_fwd::errors()),
+                      static_cast<unsigned>(irq_watch::flash_ops()),
                       static_cast<unsigned>(irq_watch::flash_max_us()));
     }
     delay(5);
