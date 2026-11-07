@@ -34,6 +34,7 @@
 #include <esp_camera.h>
 #include <esp_http_server.h>
 #include <esp_wifi.h>
+#include <driver/gpio.h>
 
 #include "syslog.h"
 #include "irq_watch.h"
@@ -549,6 +550,40 @@ void trial_loop(bool up) {
     }
 }
 
+// GET /pins: which header pin carries a signal (the LiDAR's TX: thousands of edges a second). Samples
+// each pin not taken by the camera, the UARTs to the robot and USB, flash/PSRAM or the console, 50 ms
+// each, with only its input enabled (the LiDAR's own pin is read through its UART's input). Debug aid.
+esp_err_t pins_handler(httpd_req_t* req) {
+    // ?all=1: every GPIO but flash and octal PSRAM (26-37), the camera's too (stop it first, capture=0)
+    static const int few[] = {14, 21, 47, 38, 39, 40, 41, 42, 3, 0, 45, 46};
+    static const int every[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+                                38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48};
+    char q[16] = {}, a[4] = {};
+    const bool all = httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
+                     httpd_query_key_value(q, "all", a, sizeof a) == ESP_OK && a[0] == '1';
+    const int* const pins = all ? every : few;
+    const int npins = all ? sizeof every / sizeof *every : sizeof few / sizeof *few;
+    char j[1024];
+    int o = snprintf(j, sizeof j, "{");
+    for (int k = 0; k < npins; k++) {
+        const int p = pins[k];
+        if (p != lidar_rx) gpio_input_enable(static_cast<gpio_num_t>(p));
+        int edges = 0, lows = 0, last = gpio_get_level(static_cast<gpio_num_t>(p)), n = 0;
+        const uint32_t t0 = micros();
+        while (micros() - t0 < 50000) {
+            const int v = gpio_get_level(static_cast<gpio_num_t>(p));
+            edges += v != last;
+            lows += v == 0;
+            last = v;
+            ++n;
+        }
+        o += snprintf(j + o, sizeof j - o, "%s\"%d\":[%d,%d]", o > 1 ? "," : "", p, edges, n ? 100 * lows / n : 0);
+    }
+    snprintf(j + o, sizeof j - o, "}");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
+}
+
 void http_begin() {
     // Two servers: a stream holds its handler for as long as the client reads, so /status and
     // /capture have their own (the esp32-camera examples do the same, stream on port 81).
@@ -565,6 +600,8 @@ void http_begin() {
         httpd_register_uri_handler(ctl, &ctrl);
         httpd_uri_t wifi = {"/wifi", HTTP_POST, wifi_handler, nullptr};
         httpd_register_uri_handler(ctl, &wifi);
+        httpd_uri_t pins = {"/pins", HTTP_GET, pins_handler, nullptr};
+        httpd_register_uri_handler(ctl, &pins);
     }
     httpd_config_t sc = HTTPD_DEFAULT_CONFIG();
     sc.server_port = 81;
@@ -612,7 +649,7 @@ void setup() {
     WiFi.setAutoReconnect(true);
     WiFi.begin(ssid.c_str(), psk.c_str());
     apply_tx_power();
-    lidar_fwd::begin(lidar_rx, lidar_ip, lidar_port, lidar_baud);  // drops bytes until the radio is up
+    lidar_fwd::begin(lidar_rx, lidar_ip, lidar_port, lidar_baud);  // settings only; started once the network is up
     hexa_log::log(hexa_log::kNotice, "boot: hexacam %s %s, sensor %s, frame %s, quality %d, fps %d%s%s, wifi buffers in %s", __DATE__,
                   __TIME__, cam_ok ? sensor_name : "FAILED", frame_name(frame), quality, fps, vflip ? ", vflip" : "",
                   hmirror ? ", hmirror" : "", wifi_mem::internal_first ? "internal RAM" : "PSRAM");
@@ -651,6 +688,10 @@ void loop() {
         hexa_log::log(hexa_log::kNotice, "wifi: up, %s, rssi %d dBm; stream http://%s:81/stream",
                       WiFi.localIP().toString().c_str(), static_cast<int>(WiFi.RSSI()),
                       WiFi.localIP().toString().c_str());
+    }
+    if (net_started) {
+        lidar_fwd::start();
+        lidar_fwd::report();
     }
     if (net_started && !ota_pw.isEmpty()) ArduinoOTA.handle();
     // Once the network is up: the boot's entries wait in irq_watch's ring (32), not in syslog's 12-line backlog.

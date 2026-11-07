@@ -39,57 +39,73 @@ uint16_t server_port = 8889;
 bool forwarding = false;
 volatile bool paused = false;
 volatile uint32_t n_bytes = 0, n_packets = 0, n_errors = 0;
+int rx = -1;
+uint32_t rx_baud = 230400;
+bool started = false;
 
-// One line per second at most, with the count: an OTA write stalls this UART long enough to overflow
-// its FIFO hundreds of times a second, and a syslog packet for each starved the update (cockpit,
-// 2026-10-10).
-void rx_err_callback(hardwareSerial_error_t err) {
-    static uint32_t last_ms = 0, count = 0;
-    count++;
-    n_errors = n_errors + 1;
-    if (paused) return;
-    const uint32_t now = millis();
-    if (last_ms && now - last_ms < 1000) return;
-    hexa_log::log(hexa_log::kInfo, "lidar: rx err %d (x%u)", static_cast<int>(err), static_cast<unsigned>(count));
-    last_ms = now;
-    count = 0;
-}
+// Counted only: the UART's event task never calls syslog (hexa_log is the loop's); report() logs them,
+// once a second at most (an OTA write overflows this FIFO hundreds of times a second, and a syslog
+// packet for each starved the update: cockpit, 2026-10-10).
+void rx_err_callback(hardwareSerial_error_t) { n_errors = n_errors + 1; }
 
-void rx_callback() {
-    const size_t cc = comm.read(buf + len, kBuf - len);
-    n_bytes = n_bytes + cc;
-    // No radio, no forwarding: beginPacket() calls into lwIP. Keep draining the UART -- dropping the
-    // bytes is right, blocking the callback is not.
-    if (!forwarding || paused || WiFi.status() != WL_CONNECTED) {
-        len = 0;
-        return;
-    }
-    if ((len += cc) && len > 128) {  // larger UDP packets
-        udp.beginPacket(server_ip, server_port);
-        udp.write(buf, len);
-        udp.endPacket();
-        n_packets = n_packets + 1;
-        len = 0;
+// Its own task (not the UART's event task, which runs near the top priority): drains the UART and sends
+// a datagram once more than 128 bytes are in.
+void fwd_task(void*) {
+    for (;;) {
+        const int a = comm.available();
+        if (a <= 0) {
+            vTaskDelay(2);
+            continue;
+        }
+        const size_t cc = comm.read(buf + len, kBuf - len);
+        n_bytes = n_bytes + cc;
+        // No radio, no forwarding: drop the bytes, keep draining.
+        if (paused || WiFi.status() != WL_CONNECTED) {
+            len = 0;
+            continue;
+        }
+        if ((len += cc) && len > 128) {  // larger UDP packets
+            udp.beginPacket(server_ip, server_port);
+            udp.write(buf, len);
+            udp.endPacket();
+            n_packets = n_packets + 1;
+            len = 0;
+        }
     }
 }
 
 }  // namespace
 
 void begin(int rx_pin, const IPAddress& server, uint16_t port, uint32_t baud) {
+    rx = rx_pin;
+    rx_baud = baud;
     server_ip = server;
     server_port = port;
     forwarding = rx_pin >= 0 && server != IPAddress(0, 0, 0, 0);
+}
+
+void start() {
+    if (started) return;
+    started = true;
     if (!forwarding) {
-        hexa_log::log(hexa_log::kInfo, "lidar: forwarder off (rx %d, server %s)", rx_pin, server.toString().c_str());
+        hexa_log::log(hexa_log::kInfo, "lidar: forwarder off (rx %d, server %s)", rx, server_ip.toString().c_str());
         return;
     }
-    pinMode(rx_pin, INPUT);
     comm.setRxBufferSize(kRxBuffer);
     comm.onReceiveError(rx_err_callback);
-    comm.onReceive(rx_callback);
-    comm.begin(baud, SERIAL_8N1, rx_pin, -1);
-    hexa_log::log(hexa_log::kNotice, "lidar: forwarding GPIO %d (%u baud) to %s:%u", rx_pin,
-                  static_cast<unsigned>(baud), server.toString().c_str(), static_cast<unsigned>(port));
+    comm.begin(rx_baud, SERIAL_8N1, rx, -1);
+    xTaskCreatePinnedToCore(fwd_task, "lidar_fwd", 4096, nullptr, 3, nullptr, 0);
+    hexa_log::log(hexa_log::kNotice, "lidar: forwarding GPIO %d (%u baud) to %s:%u", rx,
+                  static_cast<unsigned>(rx_baud), server_ip.toString().c_str(), static_cast<unsigned>(server_port));
+}
+
+void report() {
+    static uint32_t last_ms = 0, last_err = 0;
+    if (n_errors == last_err || millis() - last_ms < 1000) return;
+    hexa_log::log(hexa_log::kInfo, "lidar: rx errors %u (+%u)", static_cast<unsigned>(n_errors),
+                  static_cast<unsigned>(n_errors - last_err));
+    last_err = n_errors;
+    last_ms = millis();
 }
 
 void pause() { paused = true; }

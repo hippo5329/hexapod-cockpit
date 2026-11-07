@@ -2,7 +2,7 @@
 // bytes sent as UDP datagrams to the robot computer, where linorobot2-cockpit's ldlidar node in
 // `udp_server` mode makes /scan. Ported from linorobot2-cockpit firmware/common/lib/lidar/lidar.cpp
 // (Apache-2.0, Thomas Chou): raw bytes, not aligned to LD19 packets, more than 128 at a time; dropped while
-// the radio is down or an OTA runs; receive errors to syslog once a second at most.
+// the radio is down or an OTA runs; receive errors to syslog once a second at most, from the loop.
 //
 // Settings (NVS namespace hexacam, /control?lidar_rx=..&lidar_ip=..&lidar_port=.., kept, reboots):
 //   lidar_rx    the GPIO wired to the LiDAR's TX; -1 (default): off
@@ -14,8 +14,12 @@
 #include <IPAddress.h>
 
 namespace lidar_fwd {
-// After Wi-Fi.begin (the callback drops bytes until the radio is up).
+// The settings, at boot; nothing is opened.
 void begin(int rx_pin, const IPAddress& server, uint16_t port, uint32_t baud);
+// Once the network is up, from the loop: opens UART2 and starts the forwarding task (its own, priority 3).
+void start();
+// From the loop: the receive errors, once a second at most (the UART's task only counts them).
+void report();
 // The OTA hook: nothing goes out on the radio but the update; the UART is still drained.
 void pause();
 bool on();
