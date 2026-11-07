@@ -178,10 +178,10 @@ int main() { hexa::RangeParams p; std::printf("%.7f %.7f %.7f\n", p.x, p.y, p.ya
 
 
 def test_camera_frame_is_the_measured_mount(urdf):
-    """camera_link 0.05 m ahead, 0.11 m above the body's underside; the optical frame looks along +x."""
+    """camera_link 0.065 m ahead, 0.005 m right, 0.11 m above the body's underside; the optical frame looks along +x."""
     cam, opt = urdf["camera_link"], urdf["camera_optical_frame"]
     assert cam["parent"] == "base_link" and opt["parent"] == "camera_link"
-    assert [cam["T"][i][3] for i in range(3)] == pytest.approx([0.050, 0, 0.110 - 0.025 / 2], abs=1e-9)
+    assert [cam["T"][i][3] for i in range(3)] == pytest.approx([0.065, -0.005, 0.110 - 0.025 / 2], abs=1e-9)
     T = matmul(cam["T"], opt["T"])
     # optical z (the view) is body +x, optical x (image right) is body -y, optical y (image down) is body -z
     assert [T[i][2] for i in range(3)] == pytest.approx([1, 0, 0], abs=1e-9)

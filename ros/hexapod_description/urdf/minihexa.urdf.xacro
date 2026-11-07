@@ -73,15 +73,15 @@
     <origin xyz="0.080 0 0.020" rpy="0 0 0"/>
   </joint>
 
-  <!-- The camera (hexacam, OV3660), measured on the robot: 0.05 m ahead of the body centre and
-       0.11 m above the underside of the body (the box below, 0.025 tall about base_link), looking
+  <!-- The camera (hexacam, OV3660), measured on the robot (user, 2026-11-07): 0.065 m ahead of the
+       body centre, 0.005 m right of it and 0.11 m above the underside of the body (the box below, 0.025 tall about base_link), looking
        forward. camera_optical_frame is the image's (z forward, x right, y down), the bridge's
        frame_id. -->
   <link name="camera_link"/>
   <joint name="camera_joint" type="fixed">
     <parent link="base_link"/>
     <child link="camera_link"/>
-    <origin xyz="0.050 0 ${0.110 - body_h/2}" rpy="0 0 0"/>
+    <origin xyz="0.065 -0.005 ${0.110 - body_h/2}" rpy="0 0 0"/>
   </joint>
   <link name="camera_optical_frame"/>
   <joint name="camera_optical_joint" type="fixed">

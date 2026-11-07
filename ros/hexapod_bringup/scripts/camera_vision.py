@@ -24,7 +24,8 @@ Parameters:
                     empty: no depth (objects by floor contact, no obstacles); needs onnxruntime
   score             0.40, the lowest class score kept
   cam_height        0.1575 m, the camera above the floor while standing (URDF: base_link 0.060 + 0.0975)
-  cam_x             0.050 m, the camera ahead of the body centre
+  cam_x             0.065 m, the camera ahead of the body centre (URDF camera_joint)
+  cam_y             -0.005 m, the camera left of the body centre (- = right)
   mount_pitch_deg   2.3, the camera's own tilt on the body (+ looks down); fitted on the checkerboard
                     frames with the IMU's +0.4 deg (3 deg total)
   rate              5.0 Hz, the most frames processed per second (the newest is taken, others dropped)
@@ -98,7 +99,7 @@ class NanoDet:
         return sorted(out, key=lambda o: -o[1])
 
 
-def ground_point(u, v, K, D, height, pitch, roll=0.0, cam_x=0.0):
+def ground_point(u, v, K, D, height, pitch, roll=0.0, cam_x=0.0, cam_y=0.0):
     """The floor point (x ahead, y left, in m from the body centre's ground projection) that pixel (u, v)
     sees, or None at or above the horizon. pitch + looks down (ROS: nose down), roll + right side down."""
     n = cv2.undistortPoints(np.array([[[u, v]]], np.float64), K, D).ravel()
@@ -109,7 +110,7 @@ def ground_point(u, v, K, D, height, pitch, roll=0.0, cam_x=0.0):
     if r[2] > -1e-3:
         return None
     t = height / -r[2]
-    return cam_x + t * r[0], t * r[1]
+    return cam_x + t * r[0], cam_y + t * r[1]
 
 
 class Depth:
@@ -146,7 +147,7 @@ class Depth:
             self.key = (K.tobytes(), D.tobytes(), w, h)
         return self.rays
 
-    def obstacles(self, bgr, K, D, height, pitch, roll, cam_x):
+    def obstacles(self, bgr, K, D, height, pitch, roll, cam_x, cam_y=0.0):
         """(obstacle points (N, 2) x ahead, y left in m; obstacle pixel mask; per pixel x, y (m); fit ok)."""
         h, w = bgr.shape[:2]
         disp = self.disparity(bgr)
@@ -175,7 +176,7 @@ class Depth:
             z = np.where(disp - b > 1e-6, a / (disp - b), np.inf)
         up = height + z * r[..., 2]  # the point's height above the floor
         obst = np.isfinite(z) & (z < 2.5) & (up > self.rise) & (up < 0.6)
-        X, Y = cam_x + z * r[..., 0], z * r[..., 1]
+        X, Y = cam_x + z * r[..., 0], cam_y + z * r[..., 1]
         return np.column_stack([X[obst], Y[obst]]), obst, X, Y, True
 
 
@@ -211,7 +212,8 @@ def main():
             if not path:
                 raise SystemExit("camera_vision: set model_path (the NanoDet-Plus ONNX)")
             self.det = NanoDet(path, float(p("score", 0.40)))
-            self.height, self.cam_x = float(p("cam_height", 0.1575)), float(p("cam_x", 0.050))
+            self.height, self.cam_x = float(p("cam_height", 0.1575)), float(p("cam_x", 0.065))
+            self.cam_y = float(p("cam_y", -0.005))
             self.mount = math.radians(float(p("mount_pitch_deg", 2.3)))
             self.period = 1.0 / float(p("rate", 5.0))
             dpath = p("depth_model_path", "")
@@ -263,9 +265,9 @@ def main():
                 return
             h, w = bgr.shape[:2]
             pitch = self.pitch + self.mount
-            gp = lambda u, v: ground_point(u, v, self.K, self.D, self.height, pitch, self.roll, self.cam_x)
+            gp = lambda u, v: ground_point(u, v, self.K, self.D, self.height, pitch, self.roll, self.cam_x, self.cam_y)
             t1 = time.time()
-            pts, obst, X, Y, fit = (self.depth.obstacles(bgr, self.K, self.D, self.height, pitch, self.roll, self.cam_x)
+            pts, obst, X, Y, fit = (self.depth.obstacles(bgr, self.K, self.D, self.height, pitch, self.roll, self.cam_x, self.cam_y)
                                     if self.depth else (np.zeros((0, 2)), None, None, None, False))
             t2 = time.time()
             objs, arr = [], Detection2DArray()
