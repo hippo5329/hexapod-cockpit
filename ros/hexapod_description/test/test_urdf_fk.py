@@ -187,3 +187,11 @@ def test_camera_frame_is_the_measured_mount(urdf):
     assert [T[i][2] for i in range(3)] == pytest.approx([1, 0, 0], abs=1e-9)
     assert [T[i][0] for i in range(3)] == pytest.approx([0, -1, 0], abs=1e-9)
     assert [T[i][1] for i in range(3)] == pytest.approx([0, 0, -1], abs=1e-9)
+
+
+def test_laser_frame_is_the_measured_mount(urdf):
+    """laser_link (the LD19, the scan's frame_id) 0.005 m behind the centre, 0.145 m above the body's underside, level."""
+    las = urdf["laser_link"]
+    assert las["parent"] == "base_link"
+    assert [las["T"][i][3] for i in range(3)] == pytest.approx([-0.005, 0, 0.145 - 0.025 / 2], abs=1e-9)
+    assert [las["T"][i][i] for i in range(3)] == pytest.approx([1, 1, 1], abs=1e-9)  # level, facing ahead
