@@ -6,7 +6,8 @@
 # 10 Hz (a 100 Hz /cmd_vel gave late gait ticks, 2026-11-06), 0.035 m/s and 0.30 rad/s (limits 0.04 / 0.35),
 # radius 0.17 m (frame 240 x 234 mm), inflation 0.45, progress 0.10 m in 30 s, goal yaw 0.25 rad.
 # The slam block is flat (slam.launch.py wraps it): explore and nav2 read slam.base_frame from it.
-# explore: min_frontier_size 0.5 (explore_lite's own; cockpit's 0.2 sent this robot into a 0.2 m corner
+# explore: min_frontier_size 0.3 (0.5, explore_lite's own, found 'no frontiers' in this furnished room after
+# a partial map; cockpit's 0.2 sent this robot into a 0.2 m corner
 # frontier, where the collision monitor's approach crept it at 0.003 m/s and explore_lite counted the creep
 # as progress, 2026-11-07), progress_timeout 45 s.
 robot:
@@ -362,4 +363,4 @@ nav2:
 explore:
   ros__parameters:
     progress_timeout: 45.0
-    min_frontier_size: 0.5
+    min_frontier_size: 0.3
