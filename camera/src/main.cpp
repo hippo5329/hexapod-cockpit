@@ -4,8 +4,10 @@
 //
 //   http://<ip>:81/stream    MJPEG (multipart/x-mixed-replace), paced to the `fps` setting; one client
 //   http://<ip>/capture      one JPEG
-//   http://<ip>/status       JSON: settings, measured rate and size, Wi-Fi (rssi, power save, tx power), memory,
-//                            chip temperature
+//   http://<ip>/status       JSON: settings, measured rate and size, Wi-Fi (rssi, power save, tx power), memory
+//                            (no chip temperature: temperatureRead() masks interrupts for ~500 us, and the robot's
+//                            UART loses bytes -- IDF 5.5.5 esp_hw_support/sar_periph_ctrl_common.c
+//                            temp_sensor_get_raw_value(): esp_rom_delay_us(200 + 300) inside portENTER_CRITICAL)
 //   http://<ip>/control      ?vflip=0|1&hmirror=0|1&fps=1-30&xclk=5-24&frame=<size>: kept in NVS (a new size
 //                            reboots, a new xclk restarts the camera); capture=0|1 stops/starts it (not kept)
 //   POST http://<ip>/wifi    ssid=..&psk=..[&syslog_ip=..]: another network, on trial (60 s, else back)
@@ -17,7 +19,11 @@
 // default qvga), quality (JPEG 10-40, lower is better; default 12), fps (1-30; default 10), vflip,
 // hmirror (1: flip the image for the mount), xclk (the sensor clock, MHz, 5-24; default 20), tx_dbm,
 // wbuf (1: Wi-Fi buffers in internal RAM, wifi_mem.h; default 1), syslog_ip,
-// syslog_port (the robot firmware's syslog).
+// syslog_port (the robot firmware's syslog), uart (the link to the robot, below; default echo).
+//
+// The robot's UART: UART1, RX GPIO1 <- the robot's GPIO32, TX GPIO2 -> its GPIO33, 1.5 Mbaud 8N1
+// (wired 2026-11-07). NVS `uart`: echo (every byte sent back: the robot's console `uart` test checks
+// the link) or off. Counted in /status (uart_bytes) and the health line.
 #include <Arduino.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
@@ -27,6 +33,7 @@
 #include <esp_wifi.h>
 
 #include "syslog.h"
+#include "irq_watch.h"
 #include "wifi_mem.h"
 
 namespace {
@@ -51,6 +58,50 @@ bool wifi_trial = false;
 
 // What the stream has delivered, for /status and the health line.
 volatile uint32_t frames_sent = 0, bytes_sent = 0, stream_clients = 0, capture_fails = 0;
+
+// The robot's UART (see the top).
+constexpr int kUartRx = 1, kUartTx = 2;
+constexpr uint32_t kUartBaud = 1500000;
+String uart_mode = "echo";
+volatile uint32_t uart_bytes = 0;
+// The driver's receive errors (onReceiveError): where the robot's test loses bytes, if here.
+volatile uint32_t uart_err_ovf = 0, uart_err_full = 0, uart_err_frame = 0;
+
+// Echo: what arrives goes straight back. Its own task, so a stream or a Wi-Fi stall never holds it.
+void uart_echo_task(void*) {
+    uint8_t b[512];
+    for (;;) {
+        const int a = Serial1.available();
+        if (a > 0) {
+            const int n = Serial1.read(b, a < static_cast<int>(sizeof b) ? a : sizeof b);
+            if (n > 0) {
+                Serial1.write(b, n);
+                uart_bytes = uart_bytes + n;
+            }
+        } else {
+            vTaskDelay(1);
+        }
+    }
+}
+
+void uart_begin() {
+    if (uart_mode != "echo") return;
+    // Large driver buffers (the hardware FIFO is a fixed 128 bytes): 32 KB each way, 210 ms at 1.5 Mbaud.
+    Serial1.setRxBufferSize(32768);
+    Serial1.setTxBufferSize(32768);
+    Serial1.begin(kUartBaud, SERIAL_8N1, kUartRx, kUartTx);
+    // Empty the 128-byte FIFO at 32 bytes, not Arduino's 120: 640 us of slack at 1.5 Mbaud, not 53.
+    Serial1.setRxFIFOFull(32);
+    Serial1.onReceiveError([](hardwareSerial_error_t e) {
+        if (e == UART_FIFO_OVF_ERROR) {
+            uart_err_ovf = uart_err_ovf + 1;
+            irq_watch::mark_overflow();
+        }
+        else if (e == UART_BUFFER_FULL_ERROR) uart_err_full = uart_err_full + 1;
+        else if (e == UART_FRAME_ERROR) uart_err_frame = uart_err_frame + 1;
+    });
+    xTaskCreatePinnedToCore(uart_echo_task, "uart_echo", 4096, nullptr, 5, nullptr, 1);
+}
 
 struct Frame {
     const char* name;
@@ -82,6 +133,8 @@ void load_settings() {
     wifi_trial = prefs.getBool("wifi_trial", false);
     tx_dbm = constrain(prefs.getString("tx_dbm", "20").toFloat(), 2.0f, 20.0f);
     wifi_mem::internal_first = prefs.getString("wbuf", "1") != "0";
+    uart_mode = prefs.getString("uart", "echo");
+    if (uart_mode != "echo" && uart_mode != "off") uart_mode = "echo";
 }
 
 void apply_tx_power() { esp_wifi_set_max_tx_power(static_cast<int8_t>(tx_dbm * 4)); }
@@ -188,7 +241,7 @@ esp_err_t capture_handler(httpd_req_t* req) {
 float measured_fps = 0, measured_kbps = 0;
 
 esp_err_t status_handler(httpd_req_t* req) {
-    char j[768];
+    char j[1024];
     sensor_t* s = cam_ok ? esp_camera_sensor_get() : nullptr;
     wifi_ps_type_t ps = WIFI_PS_NONE;
     esp_wifi_get_ps(&ps);
@@ -197,18 +250,20 @@ esp_err_t status_handler(httpd_req_t* req) {
     snprintf(j, sizeof j,
              "{\"name\":\"%s\",\"sensor\":\"%s\",\"frame\":\"%s\",\"quality\":%d,\"fps_cap\":%d,\"fps\":%.1f,"
              "\"kbps\":%.0f,\"clients\":%u,\"frames\":%u,\"capture_fails\":%u,\"vflip\":%d,\"hmirror\":%d,"
-             "\"rssi\":%d,\"uptime_s\":%u,\"heap\":%u,\"psram_free\":%u,\"temp_c\":%.1f,\"wifi_ps\":%d,"
+             "\"rssi\":%d,\"uptime_s\":%u,\"heap\":%u,\"psram_free\":%u,\"wifi_ps\":%d,"
              "\"tx_dbm\":%.2f,\"channel\":%d,\"xclk_mhz\":%d,\"capture\":%d,\"ssid\":\"%s\",\"wifi_trial\":%d,"
-             "\"wbuf\":\"%s\",\"wbuf_internal\":%u,\"wbuf_psram\":%u,\"heap_min\":%u}",
+             "\"wbuf\":\"%s\",\"wbuf_internal\":%u,\"wbuf_psram\":%u,\"heap_min\":%u,\"uart\":\"%s\",\"uart_bytes\":%u,\"uart_err\":[%u,%u,%u]}",
              name.c_str(), sensor_name, frame_name(s ? static_cast<framesize_t>(s->status.framesize) : frame), quality,
              fps, measured_fps, measured_kbps, static_cast<unsigned>(stream_clients),
              static_cast<unsigned>(frames_sent), static_cast<unsigned>(capture_fails), vflip, hmirror,
              static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(millis() / 1000),
-             static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()), temperatureRead(),
+             static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getFreePsram()),
              static_cast<int>(ps), txp / 4.0, static_cast<int>(WiFi.channel()), xclk_mhz, cam_ok && !paused,
              ssid.c_str(), wifi_trial, wifi_mem::internal_first ? "internal" : "psram",
              static_cast<unsigned>(wifi_mem::to_internal), static_cast<unsigned>(wifi_mem::to_psram),
-             static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)));
+             static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)), uart_mode.c_str(),
+             static_cast<unsigned>(uart_bytes), static_cast<unsigned>(uart_err_ovf), static_cast<unsigned>(uart_err_full),
+             static_cast<unsigned>(uart_err_frame));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
@@ -486,6 +541,7 @@ void setup() {
     load_settings();
     hexa_log::begin(prefs, !ssid.isEmpty(), true, name.c_str(), "camera");
     cam_ok = camera_begin();
+    uart_begin();  // before Wi-Fi: the robot's link does not wait for a network
     if (ssid.isEmpty()) {
         hexa_log::log(hexa_log::kErr, "no ssid in NVS (hexacam): nothing to join (tools/make_cam_nvs.py)");
         return;
@@ -496,6 +552,10 @@ void setup() {
     WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) {
         hexa_log::log(hexa_log::kWarning, "wifi: disconnected, reason %d", info.wifi_sta_disconnected.reason);
     }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    // Every event's time, beside irq_watch's flash operations.
+    WiFi.onEvent([](WiFiEvent_t e, WiFiEventInfo_t) {
+        hexa_log::log(hexa_log::kInfo, "irq: wifi event %d at %u ms", static_cast<int>(e), static_cast<unsigned>(millis()));
+    });
     // What it can hear, once (names, channels, levels; the wanted one marked).
     const int n = WiFi.scanNetworks();
     for (int i = 0; i < n && i < 12; ++i)
@@ -545,6 +605,8 @@ void loop() {
                       WiFi.localIP().toString().c_str());
     }
     if (net_started && !ota_pw.isEmpty()) ArduinoOTA.handle();
+    // Once the network is up: the boot's entries wait in irq_watch's ring (32), not in syslog's 12-line backlog.
+    if (up) irq_watch::report([](const char* text) { hexa_log::log(hexa_log::kInfo, "%s", text); });
     static uint32_t last = 0, f0 = 0, b0 = 0;
     if (millis() - last > 30000) {
         const float dt = (millis() - last) / 1000.0f;
@@ -553,13 +615,16 @@ void loop() {
         measured_kbps = (bytes_sent - b0) * 8 / 1000.0f / dt;
         f0 = frames_sent;
         b0 = bytes_sent;
-        hexa_log::log(hexa_log::kInfo, "health: %s rssi %d dBm  stream %u client(s) %.1f fps %.0f kbit/s  fails %u  heap %u (min %u) psram %u  wbuf %u/%u  %.1f C",
+        hexa_log::log(hexa_log::kInfo, "health: %s rssi %d dBm  stream %u client(s) %.1f fps %.0f kbit/s  fails %u  heap %u (min %u) psram %u  wbuf %u/%u  uart %s %u B err %u/%u/%u  flash ops %u max %u us",
                       up ? "up" : "DOWN", static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(stream_clients),
                       measured_fps, measured_kbps, static_cast<unsigned>(capture_fails),
                       static_cast<unsigned>(ESP.getFreeHeap()),
                       static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
                       static_cast<unsigned>(ESP.getFreePsram()), static_cast<unsigned>(wifi_mem::to_internal),
-                      static_cast<unsigned>(wifi_mem::to_psram), temperatureRead());
+                      static_cast<unsigned>(wifi_mem::to_psram), uart_mode.c_str(), static_cast<unsigned>(uart_bytes),
+                      static_cast<unsigned>(uart_err_ovf), static_cast<unsigned>(uart_err_full),
+                      static_cast<unsigned>(uart_err_frame), static_cast<unsigned>(irq_watch::flash_ops()),
+                      static_cast<unsigned>(irq_watch::flash_max_us()));
     }
     delay(5);
 }

@@ -58,6 +58,7 @@ static_assert(RMW_UXRCE_MAX_SUBSCRIPTIONS >= 5, "libmicroros built with fewer su
 
 #include "board_io.h"
 #include "board_minihexa.h"
+#include "cam_uart.h"
 #include "hexa_ahrs.h"
 #include "hexa_power.h"
 #include "hexa_sensors.h"
@@ -970,6 +971,14 @@ void console_command(String cmd) {
         Serial.print("trims (us, servo id 1-18):");
         for (int i = 0; i < kJoints; ++i) Serial.printf(" %d", trims[i]);
         Serial.println();
+    } else if (cmd.startsWith("uart")) {
+        float secs = 5;
+        long baud = 0;
+        const int sp = cmd.indexOf(' '), sp2 = cmd.indexOf(' ', sp + 1);
+        if (sp > 0) secs = cmd.substring(sp + 1, sp2 > 0 ? sp2 : cmd.length()).toFloat();
+        if (sp2 > 0) baud = cmd.substring(sp2 + 1).toInt();
+        if (secs <= 0 || secs > 60 || baud < 0 || baud > 5000000) Serial.println("usage: uart [seconds 0-60] [baud]");
+        else cam_uart::test(Serial, secs, static_cast<uint32_t>(baud));
     } else if (cmd == "bat") {
         Serial.printf("battery adc %d mV  i2c %d mV\n", board_io::battery_adc_mv(), board_io::battery_i2c_mv());
     } else if (cmd == "sonar") {
@@ -1027,7 +1036,7 @@ void console_command(String cmd) {
         if (console) deep_sleep();
         else shutdown_request("console");
     } else if (cmd.length()) {
-        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | foot <leg> <dx> <dy> <dz> [ms] | trims | bat | sonar | imu | app base|console | sim on|off | gait tripod|quad | reboot | shutdown | pose [r p y [x y z]]");
+        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | foot <leg> <dx> <dy> <dz> [ms] | trims | bat | sonar | imu | uart [s] [baud] | app base|console | sim on|off | gait tripod|quad | reboot | shutdown | pose [r p y [x y z]]");
     }
 }
 
@@ -1130,6 +1139,7 @@ void setup() {
         Serial.println("imu_level: NVS value refused, the board taken as level");
     link_cfg = hexa_link::load(prefs);
     hexa_link::begin(link_cfg);
+    cam_uart::begin();
     // The loop stops for an update's length; the gait is told to stand first.
     hexa_link::on_ota([]() { robot.command({0, 0, 0}, millis() / 1000.0f); }, nullptr);
     // A wake from the final shutdown is a BOOT press: its release waited for, so the press

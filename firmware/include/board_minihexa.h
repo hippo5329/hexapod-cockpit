@@ -26,9 +26,17 @@
 #define HEXA_SONAR_ADDR 0x77
 #define HEXA_BAT_I2C_ADDR 0x46
 
-// Battery on V1.1 boards: ADC1 channel 5 (ADC1 works with Wi-Fi on) behind 100k/10k.
+// Battery on V1.1 boards: ADC1 channel 5 (ADC1 works with Wi-Fi on) behind 100k/10k. GPIO33 is the
+// camera link's RX on this robot (below), so the ADC is never read (board_io::battery_adc_mv: -1);
+// ours is a V1.0, whose battery is the I2C monitor.
 #define HEXA_BAT_ADC_PIN 33
 #define HEXA_BAT_DIVIDER 11
+
+// The camera link (cam_uart.h): Serial2 to the ESP32-S3 camera board, 8N1. TX GPIO32 -> camera
+// GPIO1 (its RX), RX GPIO33 <- camera GPIO2 (its TX), wired by the user 2026-11-07.
+#define HEXA_CAM_UART_TX 32
+#define HEXA_CAM_UART_RX 33
+#define HEXA_CAM_UART_BAUD 1500000
 
 #define HEXA_BUZZER_PIN 21
 #define HEXA_LED_PIN 2

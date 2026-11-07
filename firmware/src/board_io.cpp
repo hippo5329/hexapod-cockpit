@@ -61,6 +61,9 @@ bool servos(const hexa::BusServo* s, int n, uint16_t ms) {
 }
 
 int battery_adc_mv() {
+#if defined(HEXA_CAM_UART_RX) && HEXA_CAM_UART_RX == HEXA_BAT_ADC_PIN
+    return -1;  // the pin is the camera link's RX: an analog read would take it off the UART
+#endif
     begin();
     uint32_t sum = 0;
     for (int i = 0; i < 32; ++i) sum += analogReadMilliVolts(HEXA_BAT_ADC_PIN);
