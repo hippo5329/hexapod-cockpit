@@ -24,10 +24,11 @@ namespace hexa {
 // stride. Turns came from 0.38-0.41 of the command to 0.65-0.68, straight lines from 53 % to 67 % (the 1.0 s,
 // 0.5, 25 mm, 40 mm defaults before). The fastest cycle was 1.5 s then (fewer, longer steps per metre was
 // thought to skid less); a LiDAR-judged sweep (2026-11-08) found the ground covered 70-72 % of the gait's
-// stride from 1.5 s down to 0.8 s and 80 % at 0.65-0.5 s: 0.8 s now. Slow commands still stretch the cycle
-// (adaptive cadence, below). Top speed max_stride / (duty * period): 107 mm/s (77 mm/s on tile).
+// stride from 1.5 s down to 0.8 s and 80 % at 0.65-0.5 s: 0.5 s now (user: "shorten legs cycle to improve
+// speed"; sim/tools/cycle_sim.cpp: the servos trail most sideways, 39 deg at 0.5 s). Slow commands still
+// stretch the cycle (adaptive cadence, below). Top speed max_stride / (duty * period): 171 mm/s (138 on tile).
 struct GaitParams {
-    float period_s = 0.8f;      // one full cycle (both tripods step once): the fastest, see max_period_s
+    float period_s = 0.5f;      // one full cycle (both tripods step once): the fastest, see max_period_s
     float duty = 0.7f;          // fraction of the cycle a foot is on the ground
     float lift = 0.030f;        // swing height
     // The body this far above the standard stand (Geometry::stand_z): every foot that much lower in the

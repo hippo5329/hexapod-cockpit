@@ -149,14 +149,16 @@ standing pulses (1500 / 1409 / 1357 µs right, 1500 / 1591 / 1643 left) within 1
 
 ## Gait
 
-A tripod gait (`lib/hexa_gait`). Defaults (`GaitParams`), tuned on a robot on glazed tile: a 0.8 s fastest cycle, each
+A tripod gait (`lib/hexa_gait`). Defaults (`GaitParams`), tuned on a robot on glazed tile: a 0.5 s fastest cycle, each
 foot down 70 % of it (both tripods down for a fifth of the cycle at each change), 30 mm lift, 60 mm longest
-stride; top speed 107 mm/s (about 77 mm/s on tile) and 0.8 rad/s. Measured by the gyro and a camera against the earlier
+stride; top speed 171 mm/s (about 138 mm/s on tile) and about 1.3 rad/s. Measured by the gyro and a camera against the earlier
 1.0 s / 0.5 / 25 mm / 40 mm: turns reach 65-68 % of the command instead of 38-41 %, straight lines 67 % instead of
 53 % (hard feet slip on tile; `/odom/gait` integrates the command, so it reads long by that much); more overlap helps
 a little, a higher lift did not. The fastest cycle was 1.5 s (57 mm/s) until a sweep judged by the LiDAR found the
-ground share the same from 1.5 s to 0.8 s (70-72 %) and higher at 0.65-0.5 s (80 %): 0.5 s, the shortest allowed,
-walks 138 mm/s on tile.
+ground share the same from 1.5 s to 0.8 s (70-72 %) and higher at 0.65-0.5 s (80 %): 0.5 s walks 138 mm/s on tile
+and is the default. The shortest allowed is 0.4 s (to try over `/gait_params`): `sim/tools/cycle_sim.cpp` walks each
+cycle with servos that turn at most 10.5 rad/s, and sideways the servos trail their command by 39 deg at 0.5 s and
+43 deg at 0.4 s.
 
 **Heading hold.** The feet slip, so open loop a straight walk drifts (up to -0.24 rad in 20 s on tile) and a turn
 makes 60-65 % of its rate. While the gait walks, the board integrates (commanded - measured) yaw rate from the
@@ -191,7 +193,7 @@ the robot stands: the body rises (or comes down for `gait tripod`) at 2 cm/s, an
 
 | mode | body up | belly off the floor | swing | stride | cycle | top speed |
 |---|---|---|---|---|---|---|
-| tripod | 0 | 45 mm | 30 mm | 60 mm | 0.8-3 s, duty 0.7 | 107 mm/s |
+| tripod | 0 | 45 mm | 30 mm | 60 mm | 0.5-3 s, duty 0.7 | 171 mm/s |
 | high | 20 mm | 65 mm | 50 mm | 45 mm | 1.0-3 s, duty 0.7 | 64 mm/s |
 | climb | 40 mm | 85 mm | 80 mm | 25 mm | 2.0-4 s, duty 0.75 | 17 mm/s |
 

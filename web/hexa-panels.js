@@ -85,7 +85,7 @@
       <div class="card" id="hx-gait-card">
         <h2>🦵 Gait <code class="u-text-0-7rem">/gait_params</code></h2>
         <div class="row">
-          <button class="btn" data-gait="0" title="Body at the standard height, 30 mm swing, up to 107 mm/s">Tripod</button>
+          <button class="btn" data-gait="0" title="Body at the standard height, 30 mm swing, up to 171 mm/s">Tripod</button>
           <button class="btn" data-gait="2" title="Body 20 mm up (belly 65 mm), 50 mm swing, up to 64 mm/s">High walk</button>
           <button class="btn" data-gait="3" title="Body 40 mm up (belly 85 mm), 80 mm swing, up to 17 mm/s">Climb pose</button>
           <button class="btn" data-gait="1" title="Middle legs up, the four corners crawl, up to 20 mm/s">Quadruped</button>

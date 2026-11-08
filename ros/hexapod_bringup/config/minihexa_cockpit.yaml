@@ -3,8 +3,8 @@
 # base_frame base_footprint (the top of this robot's tree: odom -> base_footprint -> base_link), travel
 # thresholds 0.1 m / 0.15 rad (it walks ~0.03 m/s), LD19 range 8 m, the map every 2 s.
 # The nav2 block is the reference's with the hexapod's: frames base_footprint, controller and smoother at
-# 10 Hz (a 100 Hz /cmd_vel gave late gait ticks, 2026-11-06), MPPI Omni up to 0.10 m/s each way (the gait's top
-# speed is 107 mm/s at its 0.8 s cycle; tile slip leaves ~72 % on the ground) and 0.75 rad/s (the gait's top is 0.8),
+# 10 Hz (a 100 Hz /cmd_vel gave late gait ticks, 2026-11-06), MPPI Omni up to 0.15 m/s each way (the gait's top
+# speed is 171 mm/s at its 0.5 s cycle; tile slip leaves ~81 % on the ground) and 1.0 rad/s (the gait's top is 1.3),
 # radius 0.17 m (frame 240 x 234 mm), inflation 0.45, progress 0.10 m in 30 s, goal yaw 0.25 rad.
 # The slam block is flat (slam.launch.py wraps it): explore and nav2 read slam.base_frame from it.
 # explore: min_frontier_size 0.3 (0.5, explore_lite's own, found 'no frontiers' in this furnished room after
@@ -140,12 +140,12 @@ nav2:
         vx_std: 0.05
         vy_std: 0.05
         wz_std: 0.4
-        vx_max: 0.10
-        vx_min: -0.10
-        vy_max: 0.10
-        # The gait's top turn: the stride limit at a foot (107 mm/s at the 0.8 s cycle) on the outermost foot, 0.134 m
-        # out: 0.8 rad/s (sim/tools/turn_rate_sim). 0.75 keeps the gait off its clamp.
-        wz_max: 0.75
+        vx_max: 0.15
+        vx_min: -0.15
+        vy_max: 0.15
+        # The gait's top turn: the stride limit at a foot (171 mm/s at the 0.5 s cycle) on the outermost foot, 0.134 m
+        # out: 1.3 rad/s (sim/tools/turn_rate_sim). 1.0 keeps the gait off its clamp.
+        wz_max: 1.0
         ax_max: 0.2
         ax_min: -0.2
         ay_max: 0.2
@@ -276,7 +276,7 @@ nav2:
       robot_base_frame: base_footprint
       transform_tolerance: 0.3
       simulate_ahead_time: 2.0
-      max_rotational_vel: 0.75
+      max_rotational_vel: 1.0
       min_rotational_vel: 0.15
       rotational_acc_lim: 3.72
   velocity_smoother:
@@ -286,13 +286,13 @@ nav2:
       scale_velocities: false
       feedback: OPEN_LOOP
       max_velocity:
-      - 0.10
-      - 0.10
-      - 0.75
+      - 0.15
+      - 0.15
+      - 1.0
       min_velocity:
-      - -0.10
-      - -0.10
-      - -0.75
+      - -0.15
+      - -0.15
+      - -1.0
       max_accel:
       - 0.2
       - 0.2

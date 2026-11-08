@@ -107,7 +107,7 @@ static void test_stop_settles_to_neutral() {
 // never fires): at 0.5 one tripod lands on the tick the other lifts, and it once stepped forever.
 static void test_stop_settles_for_every_duty_and_period() {
     for (float duty : {0.5f, 0.55f, 0.6f, 0.7f, 0.8f}) {
-        for (float period : {0.5f, 0.8f, 1.0f, 1.5f, 2.0f, 3.0f}) {
+        for (float period : {0.4f, 0.5f, 0.8f, 1.0f, 1.5f, 2.0f, 3.0f}) {
             GaitParams p = params;
             p.period_s = period;
             p.duty = duty;
