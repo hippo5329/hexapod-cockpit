@@ -24,7 +24,7 @@
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
 // (OTA on 3232, none: no OTA), name (hostname, default hexacam), frame (qqvga, qvga, vga, svga, xga, hd;
 // default qvga), quality (JPEG 10-40, lower is better; default 12), fps (1-30; default 10), vflip,
-// hmirror (1: flip the image for the mount), xclk (the sensor clock, MHz, 5-24; default 22), tx_dbm,
+// hmirror (1: flip the image for the mount), xclk (the sensor clock, MHz, 5-24; default 12), tx_dbm,
 // wbuf (1: Wi-Fi buffers in internal RAM, wifi_mem.h; default 1), syslog_ip,
 // syslog_port (the robot firmware's syslog), uart (the link to the robot, below; default echo),
 // lidar_rx, lidar_ip, lidar_port, lidar_baud (the LiDAR forwarder, lidar_fwd.h; off without lidar_rx and lidar_ip).
@@ -56,11 +56,11 @@ bool vflip = false, hmirror = false;
 const char* sensor_name = "none";
 bool cam_ok = false, net_started = false;
 bool boot_capture = true;  // NVS boot_capture "0": the camera is not started at boot
-// The sensor clock, MHz. Not 20: with XCLK at 20 MHz (18, 16, 15, 10 too) this board's Wi-Fi uplink leaves only at
-// beacons (pings a ~100 ms sawtooth, 30-58 % lost on one AP, LiDAR datagrams dropped in the TX queue), on two
-// boards, with or without a sensor attached (the init alone starts the clock); 22 MHz (12, 8, 5 too) is clean,
-// 5 ms pings, and 22 keeps the full frame rate (12: 4.3 of 5 fps; 8: colours off; 24: corrupt frames). 2026-11-08.
-int xclk_mhz = 22;
+// The sensor clock, MHz. Some clocks stall this board's Wi-Fi uplink to the beacons (pings a ~100 ms sawtooth,
+// 30-58 % lost, LiDAR datagrams dropped in the TX queue); which ones depends on the install: on a USB supply 20,
+// 18, 16, 15, 10 MHz did and 22 did not, on the robot 20 and 22 did. 12 MHz was clean in both (5 ms pings) at the
+// full 5 fps; 8 shifts the colours, 24 corrupts the frames. The init alone starts it (no sensor needed). 2026-11-08.
+int xclk_mhz = 12;
 // Wi-Fi transmit power, dBm (2-20). Cheap S3 boards cannot hold the default 20 dBm bursts: frames and
 // acks are lost, the AP retries and falls to its slowest rate (pings of seconds, 2026-11-06).
 float tx_dbm = 20.0f;
@@ -150,7 +150,7 @@ void load_settings() {
     fps = constrain(prefs.getString("fps", "10").toInt(), 1, 30);
     vflip = prefs.getString("vflip", "0") == "1";
     hmirror = prefs.getString("hmirror", "0") == "1";
-    xclk_mhz = constrain(prefs.getString("xclk", "22").toInt(), 5, 24);
+    xclk_mhz = constrain(prefs.getString("xclk", "12").toInt(), 5, 24);
     wifi_trial = prefs.getBool("wifi_trial", false);
     tx_dbm = constrain(prefs.getString("tx_dbm", "20").toFloat(), 2.0f, 20.0f);
     wifi_mem::internal_first = prefs.getString("wbuf", "1") != "0";

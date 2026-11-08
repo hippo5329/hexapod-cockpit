@@ -13,7 +13,7 @@ KEY=VALUE lines (# comments allowed), NVS namespace `hexacam` (camera/src/main.c
     fps           1-30                                     (default 10)
     vflip, hmirror  1 | 0: flip the image for the mount    (default 0)
     syslog_ip, syslog_port  the syslog sink (port default 5140)
-    xclk          the sensor clock, MHz 5-24                 (default 22; 20 stalls the Wi-Fi uplink)
+    xclk          the sensor clock, MHz 5-24                 (default 12; 20 and 22 can stall the Wi-Fi uplink)
     tx_dbm        Wi-Fi transmit power, dBm 2-20             (default 20; cheap boards lose frames at 20)
     lidar_rx      the GPIO wired to the LiDAR's TX (UART2)   (default -1: no forwarder)
     lidar_ip, lidar_port  the robot computer's ldlidar udp_server (port default 8889)
