@@ -211,8 +211,8 @@ static void test_yaw_hold_holds_heading_and_turn_rate() {
     const float held = walk_with_slip({0.05f, 0, 0}, 20, true, &odom);
     TEST_ASSERT_FLOAT_WITHIN(0.03f, 0.0f, held);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, odom);  // odometry: no turn, as commanded
-    // A turn below the gait's top rate (0.3 rad/s is already at the stride limit of the 1.5 s cycle:
-    // there the trim has no room, and the robot's 0.3 turns made 0.19).
+    // A turn below the gait's top rate (0.3 rad/s was at the stride limit of the old 1.5 s cycle: there
+    // the trim had no room, and the robot's 0.3 turns made 0.19; 0.8 s tops out at 0.8 rad/s).
     const float open = walk_with_slip({0, 0, 0.15f}, 10, false, &odom);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.6f * 1.5f - 0.12f, open);  // ~52 % of the turn
     const float closed = walk_with_slip({0, 0, 0.15f}, 10, true, &odom);

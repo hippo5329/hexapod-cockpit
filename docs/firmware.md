@@ -149,12 +149,14 @@ standing pulses (1500 / 1409 / 1357 µs right, 1500 / 1591 / 1643 left) within 1
 
 ## Gait
 
-A tripod gait (`lib/hexa_gait`). Defaults (`GaitParams`), tuned on a robot on glazed tile: a 1.5 s cycle, each
+A tripod gait (`lib/hexa_gait`). Defaults (`GaitParams`), tuned on a robot on glazed tile: a 0.8 s fastest cycle, each
 foot down 70 % of it (both tripods down for a fifth of the cycle at each change), 30 mm lift, 60 mm longest
-stride; top speed 57 mm/s. Measured by the gyro and a camera against the earlier 1.0 s / 0.5 / 25 mm / 40 mm:
-turns reach 65-68 % of the command instead of 38-41 %, straight lines 67 % instead of 53 % (hard feet slip on
-tile; `/odom/gait` integrates the command, so it reads long by that much). A slower cycle takes fewer, longer
-steps per metre, so fewer touchdowns skid; more overlap helps a little; a higher lift did not.
+stride; top speed 107 mm/s (about 77 mm/s on tile) and 0.8 rad/s. Measured by the gyro and a camera against the earlier
+1.0 s / 0.5 / 25 mm / 40 mm: turns reach 65-68 % of the command instead of 38-41 %, straight lines 67 % instead of
+53 % (hard feet slip on tile; `/odom/gait` integrates the command, so it reads long by that much); more overlap helps
+a little, a higher lift did not. The fastest cycle was 1.5 s (57 mm/s) until a sweep judged by the LiDAR found the
+ground share the same from 1.5 s to 0.8 s (70-72 %) and higher at 0.65-0.5 s (80 %): 0.5 s, the shortest allowed,
+walks 138 mm/s on tile.
 
 **Heading hold.** The feet slip, so open loop a straight walk drifts (up to -0.24 rad in 20 s on tile) and a turn
 makes 60-65 % of its rate. While the gait walks, the board integrates (commanded - measured) yaw rate from the
@@ -166,7 +168,7 @@ the commanded yaw rate: the trim only makes the body turn as commanded. The `hea
 **Cadence.** `period_s` is the fastest cycle, the one top speed needs. Asked for less, the gait slows its cycle,
 up to `max_period_s` (3.0 s), so that the stride stays at 95 % of the longest: a step costs the servos about the
 same whatever ground it covers, so fewer, longer steps save power (at 0.02 m/s about half the steps of a fixed
-1.5 s cycle). The cycle follows the command over about one cycle; faster than the cycle allows is clamped
+1.5 s cycle, a quarter of a fixed 0.8 s one). The cycle follows the command over about one cycle; faster than the cycle allows is clamped
 meanwhile. A command that moves no foot faster than 2 mm/s counts as zero, so the gait does not step on the spot.
 `info` and the `health` line show the cycle in use.
 

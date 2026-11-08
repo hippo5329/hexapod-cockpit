@@ -20,12 +20,14 @@
 namespace hexa {
 
 // Defaults tuned on miniHexa #1 on glazed tile (2026-11-05, gyro + camera; variant F of
-// seven): a slower cycle takes fewer, longer steps per metre, so fewer touchdowns skid, and
-// a 0.7 duty keeps both tripods down for a fifth of the cycle at each change. Turns came
-// from 0.38-0.41 of the command to 0.65-0.68, straight lines from 53 % to 67 % (the 1.0 s,
-// 0.5, 25 mm, 40 mm defaults before). Top speed max_stride / (duty * period): 57 mm/s.
+// seven): a 0.7 duty keeps both tripods down for a fifth of the cycle at each change, 30 mm lift, 60 mm
+// stride. Turns came from 0.38-0.41 of the command to 0.65-0.68, straight lines from 53 % to 67 % (the 1.0 s,
+// 0.5, 25 mm, 40 mm defaults before). The fastest cycle was 1.5 s then (fewer, longer steps per metre was
+// thought to skid less); a LiDAR-judged sweep (2026-11-08) found the ground covered 70-72 % of the gait's
+// stride from 1.5 s down to 0.8 s and 80 % at 0.65-0.5 s: 0.8 s now. Slow commands still stretch the cycle
+// (adaptive cadence, below). Top speed max_stride / (duty * period): 107 mm/s (77 mm/s on tile).
 struct GaitParams {
-    float period_s = 1.5f;      // one full cycle (both tripods step once)
+    float period_s = 0.8f;      // one full cycle (both tripods step once): the fastest, see max_period_s
     float duty = 0.7f;          // fraction of the cycle a foot is on the ground
     float lift = 0.030f;        // swing height
     float max_stride = 0.060f;  // longest stance travel of any foot
@@ -158,7 +160,7 @@ private:
     BodyTwist cmd_{0, 0, 0};  // + the yaw trim, clamped to what the stride allows at the current cycle
     BodyTwist odom_{0, 0, 0}; // what applied() reports: cmd_'s translation, the commanded yaw rate
     float trim_wz_ = 0;
-    float period_ = 1.5f;
+    float period_ = 0.8f;
     float cmd_time_ = -1e9f;
     float phase_ = 0.0f;
     bool standing_ = true;
