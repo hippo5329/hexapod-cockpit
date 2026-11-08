@@ -93,7 +93,9 @@ How far: the depth model's relative inverse depth is fitted to the floor, whose 
 is an obstacle. Measured (2026-11-06): the checkerboard at 0.5 and 1.0 m within 5 %; walking, the
 obstacle ahead agreed with the sonar within 2-5 cm under 0.7 m (0.513/0.508, 0.474/0.450, 0.507/0.505,
 0.669/0.691 m). Beyond ~1.5 m it reads short (a closet 2.6 m away by sonar: 1.5-2.1 m): there 1 deg of
-tilt is 0.5 m. The colour of the floor alone cannot separate it from white doors (Lab within 4), hence
+tilt is 0.5 m. So `camera/obstacle_scan` reports only up to 1.0 m (`scan_range`) and feeds the local
+costmap alone: at 1.2-1.5 m a ~2 deg tilt error lifted the floor past 4.5 cm, and every heading of a
+look-around left an arc of phantom wall that fenced the robot in the global costmap (2026-11-08). The colour of the floor alone cannot separate it from white doors (Lab within 4), hence
 the depth. The class names are COCO's: white closet doors come out as "refrigerator", furniture as
 "chair", "bed" or "oven"; the obstacles do not depend on them.
 

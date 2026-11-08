@@ -402,8 +402,8 @@ nav2:
             inf_is_valid: true
             min_obstacle_height: -0.10
             max_obstacle_height: 0.50
-            obstacle_max_range: 1.5
-            raytrace_max_range: 1.5
+            obstacle_max_range: 1.0  # camera_vision scan_range: past it the floor fit cannot tell 4.5 cm
+            raytrace_max_range: 1.0
             raytrace_min_range: 0.30
             expected_update_rate: 0.0
         sonar_layer:
@@ -454,30 +454,14 @@ nav2:
         plugins:
         - static_layer
         - obstacle_layer
-        - camera_layer
+        # No camera_layer here: monocular depth is for what is near (a slipper ahead); its far-floor
+        # errors in the global costmap fenced off every frontier after a look-around (2026-11-08). The
+        # local costmap carries it; the LiDAR builds this one.
         # No sonar_layer here: a RangeSensorLayer that cannot transform into `map` (Nav2 up before SLAM)
         # blocks the update for transform_tolerance on every reading; at 10 Hz the backlog never drains
         # and the costmap stops publishing (explore waited on it, 2026-11-08). The sonar is near-field:
         # the local costmap (odom) carries it.
         - inflation_layer
-        camera_layer:
-          # camera_vision's camera/obstacle_scan: what stands over 4.5 cm off the floor ahead, below the LiDAR's
-          # plane (a slipper). A layer of its own: in one layer the LiDAR's rays over it would clear it.
-          plugin: nav2_costmap_2d::ObstacleLayer
-          enabled: true
-          observation_sources: camera
-          camera:
-            topic: /camera/obstacle_scan
-            data_type: LaserScan
-            marking: true
-            clearing: true
-            inf_is_valid: true
-            min_obstacle_height: -0.10
-            max_obstacle_height: 0.50
-            obstacle_max_range: 1.5
-            raytrace_max_range: 1.5
-            raytrace_min_range: 0.30
-            expected_update_rate: 0.0
         obstacle_layer:
           plugin: nav2_costmap_2d::ObstacleLayer
           enabled: true

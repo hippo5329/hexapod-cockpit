@@ -23,7 +23,7 @@ the floor). Checked against the checkerboard at 0.5 and 1.0 m (solvePnP: 0.501, 
                            floor fit), pitch_deg, ms
   camera/vision/image/compressed   the frame with boxes, distances and the obstacles tinted red
   camera/obstacle_scan     sensor_msgs/LaserScan in base_footprint across the camera's view (obstacle_scan()):
-                           per bearing the nearest obstacle up to 1.5 m, inf where the floor is free; only with a
+                           per bearing the nearest obstacle up to scan_range, inf where the floor is free; only with a
                            floor fit. A costmap layer of its own reads it: what the LiDAR's plane (14.5 cm) passes
                            over -- a slipper -- must not be cleared by the LiDAR's rays. A mat (up to 4 cm) is
                            floor: the robot climbs it.
@@ -50,7 +50,9 @@ Parameters:
   rate              5.0 Hz, the most frames processed per second (the newest is taken, others dropped)
   threads           4, onnxruntime's threads (set them: in a cell it cannot pin its default count)
   climb_height      0.045 m: higher than this above the floor is an obstacle, lower is climbed
-  scan_range        1.5 m, how far camera/obstacle_scan reports
+  scan_range        1.0 m, how far camera/obstacle_scan reports: further out a degree of tilt error lifts
+                    the floor past climb_height (1.7 cm a metre), and a ring of far floor read as a wall
+                    fenced the robot in after a look-around (2026-11-08)
 """
 import json
 import math
@@ -375,7 +377,7 @@ def free_floor(pts, half_width=0.12):
     return out
 
 
-def obstacle_scan(pts, half_fov, bins=32, max_range=1.5, min_points=8):
+def obstacle_scan(pts, half_fov, bins=32, max_range=1.0, min_points=8):
     """Obstacle points (N, 2; x ahead, y left, m, about the body centre) as a scan: `bins` bearings across
     +-half_fov (rad); each the 5th-percentile distance of its points within max_range (a few stray pixels are
     not a wall), inf where fewer than min_points (free as far as the camera judges). Returns the ranges."""
@@ -432,7 +434,7 @@ def main():
             self.json_pub = self.create_publisher(String, "camera/vision", 10)
             self.img_pub = self.create_publisher(CompressedImage, "camera/vision/image/compressed", qos_profile_sensor_data)
             self.scan_pub = self.create_publisher(LaserScan, "camera/obstacle_scan", qos_profile_sensor_data)
-            self.scan_range = float(p("scan_range", 1.5))
+            self.scan_range = float(p("scan_range", 1.0))
             threading.Thread(target=self.work, daemon=True).start()
 
         def on_info(self, m):
