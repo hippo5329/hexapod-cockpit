@@ -455,7 +455,10 @@ nav2:
         - static_layer
         - obstacle_layer
         - camera_layer
-        - sonar_layer
+        # No sonar_layer here: a RangeSensorLayer that cannot transform into `map` (Nav2 up before SLAM)
+        # blocks the update for transform_tolerance on every reading; at 10 Hz the backlog never drains
+        # and the costmap stops publishing (explore waited on it, 2026-11-08). The sonar is near-field:
+        # the local costmap (odom) carries it.
         - inflation_layer
         camera_layer:
           # camera_vision's camera/obstacle_scan: what stands over 4.5 cm off the floor ahead, below the LiDAR's
@@ -475,13 +478,6 @@ nav2:
             raytrace_max_range: 1.5
             raytrace_min_range: 0.30
             expected_update_rate: 0.0
-        sonar_layer:
-          # The front ultrasonic (/sonar, 15 deg): low things ahead the LiDAR misses.
-          plugin: nav2_costmap_2d::RangeSensorLayer
-          enabled: true
-          topics: ["/sonar"]
-          clear_on_max_reading: true
-          input_sensor_type: VARIABLE  # a ranging sonar (FIXED is an on/off proximity switch)
         obstacle_layer:
           plugin: nav2_costmap_2d::ObstacleLayer
           enabled: true
