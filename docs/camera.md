@@ -144,20 +144,28 @@ So every 1.5 m of travel, and once after the start, the survey looks around:
 3. At each heading it stands still for 2 s while `camera_vision` labels the frame.
 4. It resumes the explorer, facing the way it was going.
 
-Labels seen while walking count too. Each sighting goes on the map through TF at the frame's stamp. It merges with
-the nearest object of the same label within 0.5 m, or 0.9 m for furniture. An object is confirmed after:
-- two views (surveys or walking), or
-- three frames, or
-- one sighting with a score of 0.7 or more.
+Labels seen while walking count too. Each sighting within 2 m goes on the map through TF at the frame's stamp
+(people and pets are skipped: they move). It merges by place: with the nearest object it has been named as within
+0.5 m (0.9 m for furniture), else with the nearest object of any name within 0.35 m. An open-vocabulary detector
+names one thing differently from frame to frame (a white bin: bathtub, basket, trash can), so the object's label
+is the name with the most score summed over its sightings; the others are listed as "also seen as". An object is
+confirmed after:
+- sightings in two surveys, or
+- sightings at two headings of the surveys with `confirm_score` (0.7; OWLv2 0.5) or more.
+
+Walking sightings (every frame, often blurred) place and name an object but never confirm it alone: counting
+frames confirmed 1104 "objects" in one 40-minute run, the label vote and the survey rule 101.
 
 After every survey and at the end, the survey rewrites its note:
 - `<note_prefix>.md`: the confirmed objects with their room and map position, then the objects room by room, then
   each survey.
 - `<note_prefix>.json`: every object, confirmed or not, and the surveys.
 - `<note_prefix>.png`: the map with the rooms, the objects and the path walked.
-- `<note_prefix>_img/`: the labelled frame of each object's best sighting.
+- `<note_prefix>_img/`: the labelled frame of each object's best sighting, and one frame of every survey heading
+  (`survey<N>_h<k>.jpg`), to judge the detector's names by.
 - `objects/markers`: for RViz.
 
 Rooms are polygons in the **home frame**: home's position is the origin and its heading is +x. A map made fresh
 at home each run keeps the rooms where they are. `home_pose` places home on the run's map. A TERM stops the
-survey: it cancels a turn under way and writes the note. The labels are the detector's, with its mistakes (above); with OWLv2 pass `min_score:=0.2 confirm_score:=0.5`.
+survey: it cancels a turn under way and writes the note. The labels are the detector's, with its mistakes (above): OWLv2 names a white wall or door that fills the frame
+"bathtub" or "refrigerator"; with OWLv2 pass `min_score:=0.2 confirm_score:=0.5`.

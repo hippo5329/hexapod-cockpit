@@ -9,14 +9,21 @@ room to turn), and at each heading stands still for `dwell_s` while camera_visio
 was going. It also takes what the camera labels while walking.
 
 Each sighting is put on the map (camera/vision's position in base_footprint, through TF at the frame's
-stamp) and merged with the same label's nearest object within merge_m (merge_large_m for furniture). An
-object is confirmed once seen in two views (surveys or walking) or three frames, or once with confirm_score
-or more. The note, rewritten after every survey and at the end:
-  <note_prefix>.md     the confirmed objects (label, room, map x y, sightings, views, best score, nearest seen),
+stamp) and merged by place: with the nearest object it has been named as within merge_m (merge_large_m for
+furniture), else with the nearest object of any name within merge_any_m. An open-vocabulary detector names
+one thing differently frame to frame (a white bin: bathtub, basket, trash can), so an object's label is the
+name with the most score summed over its sightings, the others kept as "also seen as". People and pets
+(MOBILE) are not objects. An object is confirmed once seen in two surveys, or at two headings of the
+surveys with confirm_score or more; sightings while walking (every frame, blurred) place and name it but
+never confirm it alone (2026-11-08: frames confirmed 1104 "objects" in one run). The note, rewritten after
+every survey and at the end:
+  <note_prefix>.md     the confirmed objects (label, also seen as, room, map x y, sightings, views, best score,
+                       nearest seen),
                        then each survey (when, where, what it saw), then the unconfirmed count
   <note_prefix>.json   every object, confirmed or not, and the surveys
   <note_prefix>.png    the map with the confirmed objects and the robot's path
-  <note_prefix>_img/   the labelled camera frame of each confirmed object's best sighting
+  <note_prefix>_img/   the labelled camera frame of each object's best sighting, and one frame of every survey
+                       heading (survey<N>_h<k>.jpg: what the detector named there, to judge its names by)
 and objects/markers (visualization_msgs/MarkerArray, map frame) for RViz.
 
   camera/vision                std_msgs/String, camera_vision's JSON       in
@@ -34,10 +41,11 @@ Parameters:
   steps           8: a full circle in 45-degree turns (the camera's view overlaps the next)
   dwell_s         2.0 s at each heading, the first settle_s of it not counted (the gait stands, the frame clears)
   settle_s        0.8 s
-  max_range       3.0 m: farther sightings are not kept (the depth's error grows with distance)
+  max_range       2.0 m: farther sightings are not kept (the depth reads short past ~1.5 m)
   min_score       0.45, the least score kept (NanoDet's scale; OWLv2's runs lower: 0.2)
-  confirm_score   0.7, one sighting this sure confirms an object (OWLv2: 0.5)
-  merge_m         0.5 m; merge_large_m 0.9 m (bed, couch, table, chair and the like)
+  confirm_score   0.7: seen this sure at two headings of the surveys confirms an object (OWLv2: 0.5)
+  merge_m         0.5 m; merge_large_m 0.9 m (bed, couch, table, chair and the like); merge_any_m 0.35 m,
+                  a sighting of another name joins an object this near
   rooms_file      "", JSON {"rooms": [{"name", "polygon": [[x, y], ...]}]} in the home frame: each object and
                   survey is named by its room, and the note lists the objects room by room
   home_pose       "0,0,0", home on this run's map: x, y (m), yaw (deg), the home frame's origin and heading
@@ -49,36 +57,48 @@ import time
 LARGE = {"bed", "couch", "sofa", "dining_table", "table", "desk", "chair", "bench", "refrigerator", "tv", "television",
          "toilet", "sink", "oven", "potted_plant", "suitcase", "microwave", "cabinet", "shelf", "bookshelf", "door",
          "window", "curtain", "bathtub", "treadmill", "exercise_bike", "rug", "yoga_mat", "bicycle"}
+MOBILE = {"person", "cat", "dog"}  # they move: not a note's objects
 
 
 class ObjectMap:
-    """Sightings in the map frame, merged into objects by label and distance."""
+    """Sightings in the map frame, merged into objects by place; each object's label by score vote."""
 
-    def __init__(self, merge_m=0.5, merge_large_m=0.9, confirm_score=0.7):
+    def __init__(self, merge_m=0.5, merge_large_m=0.9, confirm_score=0.7, merge_any_m=0.35):
         self.merge_m, self.merge_large_m, self.confirm_score = merge_m, merge_large_m, confirm_score
+        self.merge_any_m = merge_any_m
         self.objs = []
 
-    def add(self, label, score, x, y, t, view, robot=None, dist=None):
-        """One sighting; returns the object (a dict) it joined or started, and whether it is its best yet."""
-        r = self.merge_large_m if label in LARGE else self.merge_m
-        best, bd = None, r
+    def add(self, label, score, x, y, t, view, robot=None, dist=None, heading=None):
+        """One sighting (`view` "walk" or "survey N", `heading` the survey's heading index); returns the object (a
+        dict) it joined or started, and whether it is its best yet."""
+        best, bd = None, math.inf
         for o in self.objs:
-            if o["label"] == label:
-                d = math.hypot(o["x"] - x, o["y"] - y)
-                if d <= bd:
-                    best, bd = o, d
+            d = math.hypot(o["x"] - x, o["y"] - y)
+            if label in o["labels"]:
+                r = self.merge_large_m if label in LARGE else self.merge_m
+            else:
+                r = self.merge_any_m
+            if d <= r and d < bd:
+                best, bd = o, d
         if best is None:
-            best = {"id": len(self.objs) + 1, "label": label, "x": x, "y": y, "w": 0.0, "sightings": 0, "views": [],
-                    "best_score": 0.0, "nearest": None, "first_t": t, "last_t": t, "best_robot": None}
+            best = {"id": len(self.objs) + 1, "label": label, "labels": {}, "x": x, "y": y, "w": 0.0, "sightings": 0,
+                    "views": [], "headings": [], "best_score": 0.0, "nearest": None, "first_t": t, "last_t": t,
+                    "best_robot": None}
             self.objs.append(best)
         o = best
         w = max(score, 1e-3)  # the position: a score-weighted mean
         o["x"] = (o["x"] * o["w"] + x * w) / (o["w"] + w)
         o["y"] = (o["y"] * o["w"] + y * w) / (o["w"] + w)
         o["w"] += w
+        o["labels"][label] = o["labels"].get(label, 0.0) + w
+        o["label"] = max(o["labels"], key=o["labels"].get)
         o["sightings"] += 1
         if view not in o["views"]:
             o["views"].append(view)
+        if heading is not None and view.startswith("survey"):
+            h = f"{view.split()[-1]}/{heading}"
+            if h not in o["headings"]:
+                o["headings"].append(h)
         o["last_t"] = t
         if dist is not None:
             o["nearest"] = dist if o["nearest"] is None else min(o["nearest"], dist)
@@ -88,10 +108,17 @@ class ObjectMap:
         return o, top
 
     def confirmed(self, o):
-        return len(o["views"]) >= 2 or o["sightings"] >= 3 or o["best_score"] >= self.confirm_score
+        surveys = {v for v in o["views"] if v.startswith("survey")}
+        return len(surveys) >= 2 or (len(o["headings"]) >= 2 and o["best_score"] >= self.confirm_score)
 
     def confirmed_objects(self):
         return sorted((o for o in self.objs if self.confirmed(o)), key=lambda o: (o["label"], o["x"], o["y"]))
+
+
+def also_seen(o, top=3):
+    """The object's other names, most score first (at most `top`)."""
+    rest = sorted((k for k in o.get("labels", {}) if k != o["label"]), key=lambda k: -o["labels"][k])
+    return ", ".join(rest[:top]) or "-"
 
 
 def to_home(x, y, home):
@@ -155,10 +182,10 @@ class Schedule:
         self.travel, self.last_t = 0.0, now
 
 
-def keep_sighting(o, max_range=3.0, min_score=0.45):
-    """camera_vision's object: has a position, near enough, sure enough; a box cut by the frame's bottom edge
-    placed by floor contact is not placed at all (its contact is out of the frame)."""
-    if "x" not in o or o.get("score", 0) < min_score or o.get("dist", 1e9) > max_range:
+def keep_sighting(o, max_range=2.0, min_score=0.45):
+    """camera_vision's object: has a position, near enough, sure enough, not a person or pet; a box cut by the
+    frame's bottom edge placed by floor contact is not placed at all (its contact is out of the frame)."""
+    if "x" not in o or o.get("score", 0) < min_score or o.get("dist", 1e9) > max_range or o.get("label") in MOBILE:
         return False
     return not (o.get("clipped") and o.get("from") == "floor contact")
 
@@ -187,11 +214,11 @@ def markdown(om, surveys, title, started, path_m, rooms=None):
     out = [f"# {title}", "",
            f"Started {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(started))} UTC; {len(surveys)} survey(s); "
            f"{path_m:.1f} m walked; {len(conf)} object(s) confirmed, {len(om.objs) - len(conf)} unconfirmed.", "",
-           "## Objects", "", "| # | label | room | map x | map y | sightings | views | best score | nearest seen | first seen |",
-           "|---|---|---|---|---|---|---|---|---|---|"]
+           "## Objects", "", "| # | label | also seen as | room | map x | map y | sightings | views | best score | nearest seen | "
+           "first seen |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for o in conf:
         near = f"{o['nearest']:.2f} m" if o["nearest"] is not None else "-"
-        out.append(f"| {o['id']} | {o['label']} | {room(o)} | {o['x']:+.2f} | {o['y']:+.2f} | {o['sightings']} | {len(o['views'])} | "
+        out.append(f"| {o['id']} | {o['label']} | {also_seen(o)} | {room(o)} | {o['x']:+.2f} | {o['y']:+.2f} | {o['sightings']} | {len(o['views'])} | "
                    f"{o['best_score']:.2f} | {near} | {fmt_t(o['first_t'])} |")
     if rooms.rooms:
         out += ["", "## By room", ""]
@@ -270,10 +297,12 @@ def main():
             self.rooms = Rooms(json.load(open(rooms_file))["rooms"] if rooms_file else (),
                                (home[0], home[1], math.radians(home[2])))
             self.steps, self.dwell_s, self.settle_s = int(p("steps", 8)), float(p("dwell_s", 2.0)), float(p("settle_s", 0.8))
-            self.max_range, self.min_score = float(p("max_range", 3.0)), float(p("min_score", 0.45))
-            self.om = ObjectMap(float(p("merge_m", 0.5)), float(p("merge_large_m", 0.9)), float(p("confirm_score", 0.7)))
+            self.max_range, self.min_score = float(p("max_range", 2.0)), float(p("min_score", 0.45))
+            self.om = ObjectMap(float(p("merge_m", 0.5)), float(p("merge_large_m", 0.9)), float(p("confirm_score", 0.7)),
+                                float(p("merge_any_m", 0.35)))
             self.started, self.surveys, self.path, self.path_m = time.time(), [], [], 0.0
             self.grid, self.frames = None, {}  # stamp -> labelled jpeg (the last few)
+            self.pending = {}  # stamp -> objects whose best sighting is that frame, not yet received
             self.state, self.cur = "walk", None  # walk | pause | dwell | turn | resume
             self.tf = tf2_ros.Buffer(cache_time=Duration(seconds=30))
             tf2_ros.TransformListener(self.tf, self)
@@ -310,9 +339,26 @@ def main():
             self.grid = (i.width, i.height, i.resolution, i.origin.position.x, i.origin.position.y, m.data)
 
         def on_frame(self, m):
-            self.frames[m.header.stamp.sec + m.header.stamp.nanosec * 1e-9] = bytes(m.data)
+            stamp = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+            self.frames[stamp] = bytes(m.data)
             while len(self.frames) > 12:
                 del self.frames[min(self.frames)]
+            # one labelled frame of each survey heading, once it has settled
+            if self.state == "dwell" and time.time() >= self.cur["dwell_from"] and not self.cur.get("framed"):
+                self.cur["framed"] = True
+                name = f"survey{len(self.surveys) + 1}_h{self.cur['step']}.jpg"
+                with open(os.path.join(self.prefix + "_img", name), "wb") as f:
+                    f.write(self.frames[stamp])
+            # camera_vision publishes a frame just after its JSON: the sightings it carried wait for it here
+            for k in [k for k in self.pending if abs(k - stamp) < 0.005]:
+                for obj in self.pending.pop(k):
+                    if abs(obj.get("best_stamp", -1.0) - stamp) < 0.005:  # still its best
+                        self.save_frame(obj, stamp)
+
+        def save_frame(self, obj, stamp):
+            obj["img"] = f"{obj['label']}_{obj['id']}.jpg"
+            with open(os.path.join(self.prefix + "_img", obj["img"]), "wb") as f:
+                f.write(self.frames[stamp])
 
         def on_vision(self, m):
             try:
@@ -339,14 +385,20 @@ def main():
             c, s = math.cos(yaw), math.sin(yaw)
             for o in objs:
                 x, y = tx + c * o["x"] - s * o["y"], ty + s * o["x"] + c * o["y"]
-                obj, top = self.om.add(o["label"], o["score"], x, y, time.time(), view, (tx, ty, yaw), o.get("dist"))
+                heading = self.cur["step"] if self.state == "dwell" else None
+                obj, top = self.om.add(o["label"], o["score"], x, y, time.time(), view, (tx, ty, yaw), o.get("dist"),
+                                       heading)
                 if self.state == "dwell":
                     self.cur["seen"][o["label"]] = self.cur["seen"].get(o["label"], 0) + 1
-                near = min(self.frames, key=lambda k: abs(k - stamp), default=None)
-                if top and near is not None and abs(near - stamp) < 0.005:  # the same frame (floats: not ==)
-                    obj["img"] = f"{obj['label']}_{obj['id']}.jpg"
-                    with open(os.path.join(self.prefix + "_img", obj["img"]), "wb") as f:
-                        f.write(self.frames[near])
+                if top:
+                    obj["best_stamp"] = stamp
+                    near = min(self.frames, key=lambda k: abs(k - stamp), default=None)
+                    if near is not None and abs(near - stamp) < 0.005:  # the same frame (floats: not ==)
+                        self.save_frame(obj, near)
+                    else:
+                        self.pending.setdefault(stamp, []).append(obj)
+            while len(self.pending) > 12:
+                del self.pending[min(self.pending)]
 
         # ---------------------------------------------------------------- the survey
         def explore(self, on):
@@ -388,6 +440,7 @@ def main():
             self.explore(False)  # again: an explorer that started after the pause was sent must not walk off
             self.state = "dwell"
             self.cur["dwell_from"], self.cur["until"] = now + self.settle_s, now + self.dwell_s
+            self.cur["framed"] = False
 
         def turn(self):
             if not self.spin.wait_for_server(timeout_sec=1.0):

@@ -9,13 +9,26 @@ import object_survey as osv  # noqa: E402
 
 
 def test_same_label_near_merges_far_does_not():
-    om = osv.ObjectMap(merge_m=0.5)
+    om = osv.ObjectMap(merge_m=0.5, merge_any_m=0.35)
     a, _ = om.add("bottle", 0.5, 1.0, 1.0, 0, "walk")
     b, _ = om.add("bottle", 0.5, 1.3, 1.0, 1, "survey 1")
     assert a is b and a["sightings"] == 2 and a["x"] == pytest.approx(1.15)
     c, _ = om.add("bottle", 0.5, 2.0, 1.0, 2, "survey 1")  # 0.85 m from the mean: another bottle
-    d, _ = om.add("cup", 0.5, 1.15, 1.0, 3, "survey 1")    # another label at the same spot: another object
+    d, _ = om.add("cup", 0.5, 1.15, 1.6, 3, "survey 1")    # another label 0.6 m away: another object
     assert len({id(o) for o in (a, c, d)}) == 3 and len(om.objs) == 3
+
+
+def test_other_names_at_one_place_vote():
+    # a white bin named three ways: one object, named by the most score
+    om = osv.ObjectMap(merge_any_m=0.35)
+    a, _ = om.add("bathtub", 0.35, 0.0, 0.0, 0, "walk")
+    b, _ = om.add("trash_can", 0.30, 0.2, 0.0, 1, "walk")
+    c, _ = om.add("trash_can", 0.30, 0.1, 0.1, 2, "walk")
+    d, _ = om.add("basket", 0.25, 0.1, 0.0, 3, "walk")
+    assert a is b is c is d and len(om.objs) == 1
+    assert a["label"] == "trash_can" and osv.also_seen(a) == "bathtub, basket"
+    e, _ = om.add("chair", 0.5, 0.6, 0.0, 4, "walk")  # 0.5 m away, another name: another object
+    assert e is not a
 
 
 def test_furniture_merges_wider():
@@ -33,19 +46,23 @@ def test_position_is_score_weighted_and_best_kept():
     assert not top and o["x"] == pytest.approx(0.1) and o["best_robot"] == (1, 2, 3) and o["nearest"] == 0.9
 
 
-def test_confirmed_by_views_frames_or_score():
-    om = osv.ObjectMap()
-    one, _ = om.add("book", 0.5, 0, 0, 0, "walk")
-    assert not om.confirmed(one)
-    om.add("book", 0.5, 0, 0, 1, "survey 1")
-    assert om.confirmed(one)  # two views
-    three, _ = om.add("cup", 0.5, 5, 5, 0, "walk")
-    om.add("cup", 0.5, 5, 5, 0, "walk")
-    assert not om.confirmed(three)
-    om.add("cup", 0.5, 5, 5, 0, "walk")
-    assert om.confirmed(three)  # three frames
-    sure, _ = om.add("tv", 0.75, 9, 9, 0, "walk")
-    assert om.confirmed(sure) and [o["label"] for o in om.confirmed_objects()] == ["book", "cup", "tv"]
+def test_confirmed_by_two_surveys_or_two_sure_headings():
+    om = osv.ObjectMap(confirm_score=0.5)
+    walked, _ = om.add("cup", 0.9, 5, 5, 0, "walk")
+    for _ in range(50):
+        om.add("cup", 0.9, 5, 5, 0, "walk")
+    om.add("cup", 0.9, 5, 5, 0, "survey 1", heading=0)
+    assert not om.confirmed(walked)  # frames while walking, however many and sure, and one heading: no
+    two, _ = om.add("book", 0.3, 0, 0, 0, "survey 1", heading=2)
+    om.add("book", 0.3, 0, 0, 1, "survey 1", heading=2)
+    assert not om.confirmed(two)
+    om.add("book", 0.3, 0, 0, 2, "survey 3", heading=5)
+    assert om.confirmed(two)  # two surveys
+    sure, _ = om.add("tv", 0.45, 9, 9, 0, "survey 2", heading=1)
+    om.add("tv", 0.45, 9, 9, 0, "survey 2", heading=2)
+    assert not om.confirmed(sure)  # two headings, not sure enough
+    om.add("tv", 0.55, 9, 9, 0, "survey 2", heading=2)
+    assert om.confirmed(sure) and [o["label"] for o in om.confirmed_objects()] == ["book", "tv"]
 
 
 def test_schedule_first_then_by_travel_and_gap():
@@ -65,7 +82,8 @@ def test_keep_sighting():
     ok = {"label": "cup", "score": 0.6, "x": 1.0, "y": 0.0, "dist": 1.0, "clipped": False, "from": "depth"}
     assert osv.keep_sighting(ok)
     assert not osv.keep_sighting({**ok, "score": 0.41})
-    assert not osv.keep_sighting({**ok, "dist": 3.5})
+    assert not osv.keep_sighting({**ok, "dist": 2.5})
+    assert not osv.keep_sighting({**ok, "label": "person"})
     assert not osv.keep_sighting({k: v for k, v in ok.items() if k != "x"})
     assert not osv.keep_sighting({**ok, "clipped": True, "from": "floor contact"})
     assert osv.keep_sighting({**ok, "clipped": True})  # by depth: its own pixels place it
@@ -74,10 +92,11 @@ def test_keep_sighting():
 def test_markdown_lists_confirmed_and_surveys():
     om = osv.ObjectMap()
     om.add("chair", 0.8, 1.234, -0.5, 0, "survey 1", dist=1.1)
+    om.add("chair", 0.8, 1.234, -0.5, 0, "survey 2")
     om.add("cup", 0.5, 3, 3, 0, "walk")
     md = osv.markdown(om, [{"t": 0, "x": 0.0, "y": 0.0, "steps": 8, "headings": 8, "seen": {"chair": 3}, "note": ""}],
                       "Objects", 0, 4.2)
-    assert "| 1 | chair | - | +1.23 | -0.50 | 1 | 1 | 0.80 | 1.10 m |" in md
+    assert "| 1 | chair | - | - | +1.23 | -0.50 | 2 | 2 | 0.80 | 1.10 m |" in md
     assert "1 object(s) confirmed, 1 unconfirmed" in md and "8 of 8 headings: chair x3" in md and "cup |" not in md
 
 
@@ -94,14 +113,15 @@ def test_rooms_in_the_home_frame():
 def test_markdown_by_room():
     import math
     om = osv.ObjectMap()
-    om.add("chair", 0.8, 0.5, 0.0, 0, "survey 1")
-    om.add("tv", 0.8, 3.0, 0.0, 0, "survey 1")
-    om.add("cup", 0.8, 9.0, 9.0, 0, "survey 1")
+    for v in ("survey 1", "survey 2"):
+        om.add("chair", 0.8, 0.5, 0.0, 0, v)
+        om.add("tv", 0.8, 3.0, 0.0, 0, v)
+        om.add("cup", 0.8, 9.0, 9.0, 0, v)
     rooms = osv.Rooms([{"name": "study", "polygon": [[-1, -1], [1, -1], [1, 1], [-1, 1]]},
                        {"name": "gym", "polygon": [[2, -1], [4, -1], [4, 1], [2, 1]]}])
     md = osv.markdown(om, [{"t": 0, "x": 3.0, "y": 0.0, "steps": 8, "headings": 8, "seen": {}, "note": ""}], "O", 0, 0,
                       rooms)
-    assert "| chair | study |" in md and "| cup | - |" in md
+    assert "| chair | - | study |" in md and "| cup | - | - |" in md
     assert "- **study**: chair" in md and "- **gym**: tv" in md and "- **elsewhere**: cup" in md
     assert "in the gym, 8 of 8" in md
 
