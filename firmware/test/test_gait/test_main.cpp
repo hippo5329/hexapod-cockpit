@@ -167,7 +167,7 @@ static void test_slow_walk_takes_fewer_longer_steps() {
     steps_walking({0.04f, 0, 0}, 10);
     TEST_ASSERT_FLOAT_WITHIN(0.05f, 0.95f * params.max_stride / (params.duty * 0.04f), gait.period());
     // Top speed and beyond: the fastest cycle, the command clamped as before.
-    steps_walking({0.2f, 0, 0}, 6);
+    steps_walking({0.3f, 0, 0}, 6);  // past the 0.4 s cycle's 0.214 m/s
     TEST_ASSERT_FLOAT_WITHIN(1e-3f, params.period_s, gait.period());
     TEST_ASSERT_FLOAT_WITHIN(1e-3f, params.max_stride / (params.duty * params.period_s), gait.target().vx);
 }
@@ -227,8 +227,12 @@ static void test_yaw_hold_holds_heading_and_turn_rate() {
 static void test_command_timeout_stands() {
     float t = 0;
     gait.command({0.05f, 0, 0}, t);
-    float waited = 0;
-    while (waited < params.cmd_timeout_s + 2 * params.period_s + kDt) {
+    gait.step(kDt, t);
+    t += kDt;
+    // The stand comes within two cycles of the one in use (adaptive cadence: 0.05 m/s walks ~1.6 s cycles).
+    const float cycle = gait.period();
+    float waited = kDt;
+    while (waited < params.cmd_timeout_s + 2 * cycle + kDt) {
         gait.step(kDt, t);
         t += kDt;
         waited += kDt;
