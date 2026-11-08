@@ -187,7 +187,8 @@ rise (or come down for `gait tripod`) in about a second, and walking waits for t
 sway and the centre of mass; the `health` line says `(quad)`.
 
 **Idle.** The servo controller has no "servos off": its protocol only sets pulses, and it holds the last ones,
-so the servos are never unpowered while the board is on. To save power the robot lies down instead: after
+so the servos are never unpowered while the board is on (a pulse of 0 is clamped to 500 µs: the joint swings to
+its end stop and holds, tried on the robot). To save power the robot lies down instead: after
 `idle_s` seconds (default 30, also from boot) without a `/cmd_vel` that moves, and once the gait stands, the
 body lowers onto its belly over 3 s and the feet come down beside it (75 mm out from each hip, 15 mm under the
 hip axis; the belly is 12-15 mm under it): it lies on its belly and six feet, steadier than on the belly alone,

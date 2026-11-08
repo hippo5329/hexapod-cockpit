@@ -73,6 +73,9 @@ struct BusServo {
 };
 constexpr int kBusMinUs = 500;
 constexpr int kBusMaxUs = 2500;
+// No "servos off": a pulse of 0 is not "no pulse" to this controller but its minimum, 500 us (sent to
+// one tibia on the robot, 2026-11-08: it swung to its end stop and held stiff). The servos hold
+// whatever the board last sent for as long as the board is on; only the power switch lets them go.
 
 // Writes the frame for n servos into out; returns its length, or 0 if it does not fit in
 // cap, n is 0 or above 21, or a pulse is outside [kBusMinUs, kBusMaxUs].
