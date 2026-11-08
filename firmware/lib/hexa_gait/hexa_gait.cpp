@@ -303,8 +303,8 @@ bool TripodGait::params_valid(const GaitParams& p) {
                                      p.sway_speed >= 0.02f && p.sway_speed <= 0.2f && p.mid_speed >= 0.01f &&
                                      p.mid_speed <= 0.1f && std::fabs(p.com_x) <= 0.03f &&
                                      std::fabs(p.com_y) <= 0.03f);
-    // 0.4 s: shorter than the default (0.5 s) to be tried on the robot over /gait_params; past it the sim's
-    // servos (10.5 rad/s) trail a sideways swing by more than 40 deg (sim/tools/cycle_sim.cpp).
+    // 0.4 s, the default: past it the sim's servos (10.5 rad/s) trail a sideways swing by more than 43 deg
+    // (sim/tools/cycle_sim.cpp).
     return duty_ok && quad_ok && p.period_s >= 0.4f && p.period_s <= 3.0f && p.lift >= 0.01f &&
            p.height >= 0.0f && p.height <= 0.04f && p.lift <= std::fmin(0.08f, 0.04f + p.height + 1e-6f) &&
            p.max_stride >= 0.01f && p.max_stride <= std::fmin(0.06f, 0.065f - p.height + 1e-6f) && p.cmd_timeout_s > 0.0f &&
