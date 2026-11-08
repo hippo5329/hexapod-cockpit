@@ -5,7 +5,8 @@ Distances come from depth made metric by the floor. Depth Anything V2 Small give
 pixel up to a scale and an offset; a floor pixel's true depth is known from the geometry (the
 calibration's K and distortion, the camera's height, the body's tilt from the IMU plus the camera's own
 tilt on the body), so the two are fitted on the floor and every pixel gets a metric depth. A point more
-than 3.5 cm above the floor is an obstacle: walls, doors and furniture of no class as well as objects.
+than climb_height (4.5 cm) above the floor is an obstacle: walls, doors and furniture of no class as well as
+objects; lower is floor the robot climbs (up to 4 cm, user 2026-11-08; the half centimetre is the depth's error).
 An object's position is its own obstacle pixels' nearest quarter (or, with no depth, where its box meets
 the floor). Checked against the checkerboard at 0.5 and 1.0 m (solvePnP: 0.501, 0.998): within 5 %.
 
@@ -17,6 +18,11 @@ the floor). Checked against the checkerboard at 0.5 and 1.0 m (solvePnP: 0.501, 
                            in the body's corridor, 15-50 deg either side; 2.5 = none seen; null: no
                            floor fit), pitch_deg, ms
   camera/vision/image/compressed   the frame with boxes, distances and the obstacles tinted red
+  camera/obstacle_scan     sensor_msgs/LaserScan in base_footprint across the camera's view (obstacle_scan()):
+                           per bearing the nearest obstacle up to 1.5 m, inf where the floor is free; only with a
+                           floor fit. A costmap layer of its own reads it: what the LiDAR's plane (14.5 cm) passes
+                           over -- a slipper -- must not be cleared by the LiDAR's rays. A mat (up to 4 cm) is
+                           floor: the robot climbs it.
 
 Parameters:
   model_path        the NanoDet-Plus ONNX (opencv_zoo object_detection_nanodet_2022nov.onnx, 416x416)
@@ -30,6 +36,8 @@ Parameters:
                     frames with the IMU's +0.4 deg (3 deg total)
   rate              5.0 Hz, the most frames processed per second (the newest is taken, others dropped)
   threads           4, onnxruntime's threads (set them: in a cell it cannot pin its default count)
+  climb_height      0.045 m: higher than this above the floor is an obstacle, lower is climbed
+  scan_range        1.5 m, how far camera/obstacle_scan reports
 """
 import json
 import math
@@ -122,7 +130,7 @@ class Depth:
 
     SIZE = 266  # 19 x 14, the ViT's patch
 
-    def __init__(self, path, threads=4, rise=0.035):
+    def __init__(self, path, threads=4, rise=0.045):
         import onnxruntime as ort
         so = ort.SessionOptions()
         so.intra_op_num_threads, so.inter_op_num_threads = threads, 1  # a cell's cpuset: ort cannot pin more
@@ -196,11 +204,28 @@ def free_floor(pts, half_width=0.12):
     return out
 
 
+def obstacle_scan(pts, half_fov, bins=32, max_range=1.5, min_points=8):
+    """Obstacle points (N, 2; x ahead, y left, m, about the body centre) as a scan: `bins` bearings across
+    +-half_fov (rad); each the 5th-percentile distance of its points within max_range (a few stray pixels are
+    not a wall), inf where fewer than min_points (free as far as the camera judges). Returns the ranges."""
+    ranges = np.full(bins, np.inf)
+    if len(pts):
+        x, y = pts[:, 0], pts[:, 1]
+        bearing, dist = np.arctan2(y, x), np.hypot(x, y)
+        k = np.floor((bearing + half_fov) / (2 * half_fov) * bins).astype(int)
+        keep = (k >= 0) & (k < bins) & (dist <= max_range) & (x > 0)
+        for b in np.unique(k[keep]):
+            d = dist[keep & (k == b)]
+            if len(d) >= min_points:
+                ranges[b] = float(np.percentile(d, 5))
+    return ranges
+
+
 def main():
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
-    from sensor_msgs.msg import CameraInfo, CompressedImage, Imu
+    from sensor_msgs.msg import CameraInfo, CompressedImage, Imu, LaserScan
     from std_msgs.msg import String
     from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
 
@@ -217,7 +242,7 @@ def main():
             self.mount = math.radians(float(p("mount_pitch_deg", 2.3)))
             self.period = 1.0 / float(p("rate", 5.0))
             dpath = p("depth_model_path", "")
-            self.depth = Depth(dpath, int(p("threads", 4))) if dpath else None
+            self.depth = Depth(dpath, int(p("threads", 4)), float(p("climb_height", 0.045))) if dpath else None
             self.K = self.D = None
             self.pitch = self.roll = 0.0
             self.frame, self.lock, self.wake = None, threading.Lock(), threading.Event()
@@ -227,6 +252,8 @@ def main():
             self.det_pub = self.create_publisher(Detection2DArray, "camera/detections", 10)
             self.json_pub = self.create_publisher(String, "camera/vision", 10)
             self.img_pub = self.create_publisher(CompressedImage, "camera/vision/image/compressed", qos_profile_sensor_data)
+            self.scan_pub = self.create_publisher(LaserScan, "camera/obstacle_scan", qos_profile_sensor_data)
+            self.scan_range = float(p("scan_range", 1.5))
             threading.Thread(target=self.work, daemon=True).start()
 
         def on_info(self, m):
@@ -298,6 +325,16 @@ def main():
                 d.results.append(hyp)
                 arr.detections.append(d)
             free = free_floor(pts) if fit else None  # None: no floor fit, nothing known
+            if fit:  # no floor fit: nothing is known, so nothing is said (the costmap keeps what it had)
+                half = math.atan2(w / 2.0, self.K[0, 0])
+                sc = LaserScan()
+                sc.header.stamp, sc.header.frame_id = m.header.stamp, "base_footprint"
+                rng = obstacle_scan(pts, half, max_range=self.scan_range)
+                sc.angle_min, sc.angle_max = -half, half
+                sc.angle_increment = 2 * half / len(rng)
+                sc.range_min, sc.range_max = 0.05, self.scan_range
+                sc.ranges = [float(r) for r in rng]
+                self.scan_pub.publish(sc)
             ms = round((time.time() - t0) * 1000)
             self.json_pub.publish(String(data=json.dumps({"stamp": m.header.stamp.sec + m.header.stamp.nanosec * 1e-9,
                                                           "objects": objs, "free": free,

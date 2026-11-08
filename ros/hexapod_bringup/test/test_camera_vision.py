@@ -36,3 +36,23 @@ def test_free_floor_sectors():
     assert f["left"] == pytest.approx(math.hypot(0.5, 0.5), abs=0.01)
     assert f["right"] == 2.5
     assert cv.free_floor(np.zeros((0, 2))) == {"left": 2.5, "centre": 2.5, "right": 2.5}
+
+
+def test_obstacle_scan_nearest_per_bearing_and_free_elsewhere():
+    half = math.radians(30)
+    # a slipper 0.6 m dead ahead (30 points), a lone stray pixel at 0.3 m off to the left
+    ahead = np.column_stack([np.tile([0.60, 0.61, 0.62], 10), np.linspace(-0.02, 0.02, 30)])  # depth not tied to bearing
+    stray = np.array([[0.3, 0.12]])
+    r = cv.obstacle_scan(np.vstack([ahead, stray]), half, bins=32)
+    mid = r[15:17]
+    assert np.all(np.isfinite(mid)) and np.all(np.abs(mid - 0.6) < 0.02)
+    assert np.isinf(r[0]) and np.isinf(r[-1])          # free where nothing was seen
+    assert np.sum(np.isfinite(r)) <= 3                   # the stray pixel is not an obstacle
+
+
+def test_obstacle_scan_ignores_beyond_range_and_behind():
+    half = math.radians(30)
+    far = np.column_stack([np.full(40, 2.0), np.zeros(40)])
+    behind = np.column_stack([np.full(40, -0.5), np.zeros(40)])
+    assert np.all(np.isinf(cv.obstacle_scan(np.vstack([far, behind]), half, max_range=1.5)))
+    assert np.all(np.isinf(cv.obstacle_scan(np.zeros((0, 2)), half)))
