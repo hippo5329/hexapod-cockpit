@@ -56,3 +56,18 @@ def test_obstacle_scan_ignores_beyond_range_and_behind():
     behind = np.column_stack([np.full(40, -0.5), np.zeros(40)])
     assert np.all(np.isinf(cv.obstacle_scan(np.vstack([far, behind]), half, max_range=1.5)))
     assert np.all(np.isinf(cv.obstacle_scan(np.zeros((0, 2)), half)))
+
+
+def test_nms_per_label_then_across():
+    a = ("door", 0.8, (0, 0, 100, 200))
+    b = ("door", 0.5, (5, 5, 100, 200))      # the same door, weaker: dropped
+    c = ("cabinet", 0.6, (2, 2, 100, 200))   # the same box, another label: kept per label, dropped across
+    d = ("towel", 0.3, (150, 10, 180, 30))   # elsewhere: kept
+    assert cv.nms([a, b, c, d], 0.5) == [a, c, d]
+    assert cv.nms(cv.nms([a, b, c, d], 0.5), 0.85, same_label=False) == [a, d]
+
+
+def test_label_name():
+    assert cv.label_name("Computer Monitor") == "computer_monitor"
+    assert cv.label_name("slipper.") == "slipper"
+    assert all(cv.label_name(w) == cv.label_name(cv.label_name(w)) for w in cv.HOUSEHOLD.split(","))

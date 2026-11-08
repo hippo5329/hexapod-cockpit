@@ -10,8 +10,8 @@ was going. It also takes what the camera labels while walking.
 
 Each sighting is put on the map (camera/vision's position in base_footprint, through TF at the frame's
 stamp) and merged with the same label's nearest object within merge_m (merge_large_m for furniture). An
-object is confirmed once seen in two views (surveys or walking) or three frames, or once with score 0.7 or
-more. The note, rewritten after every survey and at the end:
+object is confirmed once seen in two views (surveys or walking) or three frames, or once with confirm_score
+or more. The note, rewritten after every survey and at the end:
   <note_prefix>.md     the confirmed objects (label, room, map x y, sightings, views, best score, nearest seen),
                        then each survey (when, where, what it saw), then the unconfirmed count
   <note_prefix>.json   every object, confirmed or not, and the surveys
@@ -35,7 +35,8 @@ Parameters:
   dwell_s         2.0 s at each heading, the first settle_s of it not counted (the gait stands, the frame clears)
   settle_s        0.8 s
   max_range       3.0 m: farther sightings are not kept (the depth's error grows with distance)
-  min_score       0.45
+  min_score       0.45, the least score kept (NanoDet's scale; OWLv2's runs lower: 0.2)
+  confirm_score   0.7, one sighting this sure confirms an object (OWLv2: 0.5)
   merge_m         0.5 m; merge_large_m 0.9 m (bed, couch, table, chair and the like)
   rooms_file      "", JSON {"rooms": [{"name", "polygon": [[x, y], ...]}]} in the home frame: each object and
                   survey is named by its room, and the note lists the objects room by room
@@ -45,15 +46,16 @@ import json
 import math
 import time
 
-LARGE = {"bed", "couch", "dining_table", "chair", "bench", "refrigerator", "tv", "toilet", "sink", "oven",
-         "potted_plant", "suitcase", "microwave"}
+LARGE = {"bed", "couch", "sofa", "dining_table", "table", "desk", "chair", "bench", "refrigerator", "tv", "television",
+         "toilet", "sink", "oven", "potted_plant", "suitcase", "microwave", "cabinet", "shelf", "bookshelf", "door",
+         "window", "curtain", "bathtub", "treadmill", "exercise_bike", "rug", "yoga_mat", "bicycle"}
 
 
 class ObjectMap:
     """Sightings in the map frame, merged into objects by label and distance."""
 
-    def __init__(self, merge_m=0.5, merge_large_m=0.9):
-        self.merge_m, self.merge_large_m = merge_m, merge_large_m
+    def __init__(self, merge_m=0.5, merge_large_m=0.9, confirm_score=0.7):
+        self.merge_m, self.merge_large_m, self.confirm_score = merge_m, merge_large_m, confirm_score
         self.objs = []
 
     def add(self, label, score, x, y, t, view, robot=None, dist=None):
@@ -85,9 +87,8 @@ class ObjectMap:
             o["best_score"], o["best_robot"] = score, robot
         return o, top
 
-    @staticmethod
-    def confirmed(o):
-        return len(o["views"]) >= 2 or o["sightings"] >= 3 or o["best_score"] >= 0.7
+    def confirmed(self, o):
+        return len(o["views"]) >= 2 or o["sightings"] >= 3 or o["best_score"] >= self.confirm_score
 
     def confirmed_objects(self):
         return sorted((o for o in self.objs if self.confirmed(o)), key=lambda o: (o["label"], o["x"], o["y"]))
@@ -257,7 +258,7 @@ def main():
                                (home[0], home[1], math.radians(home[2])))
             self.steps, self.dwell_s, self.settle_s = int(p("steps", 8)), float(p("dwell_s", 2.0)), float(p("settle_s", 0.8))
             self.max_range, self.min_score = float(p("max_range", 3.0)), float(p("min_score", 0.45))
-            self.om = ObjectMap(float(p("merge_m", 0.5)), float(p("merge_large_m", 0.9)))
+            self.om = ObjectMap(float(p("merge_m", 0.5)), float(p("merge_large_m", 0.9)), float(p("confirm_score", 0.7)))
             self.started, self.surveys, self.path, self.path_m = time.time(), [], [], 0.0
             self.grid, self.frames = None, {}  # stamp -> labelled jpeg (the last few)
             self.state, self.cur = "walk", None  # walk | pause | dwell | turn | resume

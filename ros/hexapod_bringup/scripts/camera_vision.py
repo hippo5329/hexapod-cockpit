@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""What the camera sees and how far: objects (NanoDet-Plus, COCO's 80 classes) and the obstacles ahead.
+"""What the camera sees and how far: objects and the obstacles ahead.
+
+Objects: NanoDet-Plus on the CPU (COCO's 80 classes; the default), or on a GPU an open-vocabulary detector that
+labels from a list of phrases (HOUSEHOLD: slippers, cables, mats, doors, shelves and the like, which COCO has no
+class for): OWLv2 (detector owlv2, 32 ms a frame on an RTX 5090) or Grounding DINO (grounding_dino, 46 ms).
 
 Distances come from depth made metric by the floor. Depth Anything V2 Small gives inverse depth per
 pixel up to a scale and an offset; a floor pixel's true depth is known from the geometry (the
@@ -25,10 +29,19 @@ the floor). Checked against the checkerboard at 0.5 and 1.0 m (solvePnP: 0.501, 
                            floor: the robot climbs it.
 
 Parameters:
-  model_path        the NanoDet-Plus ONNX (opencv_zoo object_detection_nanodet_2022nov.onnx, 416x416)
-  depth_model_path  Depth Anything V2 Small ONNX (onnx-community/depth-anything-v2-small model.onnx);
-                    empty: no depth (objects by floor contact, no obstacles); needs onnxruntime
-  score             0.40, the lowest class score kept
+  detector          nanodet (CPU) | owlv2 | grounding_dino (GPU, transformers)
+  model_path        nanodet: the NanoDet-Plus ONNX (opencv_zoo object_detection_nanodet_2022nov.onnx, 416x416);
+                    owlv2 / grounding_dino: a Hugging Face model id (default google/owlv2-base-patch16-ensemble,
+                    IDEA-Research/grounding-dino-base; both Apache-2.0)
+  labels            the open-vocabulary detectors' phrases, comma separated (default HOUSEHOLD)
+  depth_model_path  Depth Anything V2 Small ONNX (onnx-community/depth-anything-v2-small model.onnx; CPU, needs
+                    onnxruntime), or hf:<model id> on the GPU (depth-anything/Depth-Anything-V2-Large-hf: 38 ms,
+                    the most accurate at 1 m; Base and Large are CC-BY-NC-4.0, Small Apache-2.0);
+                    empty: no depth (objects by floor contact, no obstacles)
+  device            cuda, for the GPU models
+  score             the lowest score kept: 0.40 (NanoDet), 0.20 (OWLv2: its scores run lower; a slipper 0.22),
+                    0.35 (Grounding DINO)
+  text_threshold    0.30, Grounding DINO's phrase score
   cam_height        0.1575 m, the camera above the floor while standing (URDF: base_link 0.060 + 0.0975)
   cam_x             0.065 m, the camera ahead of the body centre (URDF camera_joint)
   cam_y             -0.005 m, the camera left of the body centre (- = right)
@@ -73,7 +86,7 @@ class NanoDet:
             self.centres.append(np.column_stack((xv.ravel(), yv.ravel())).astype(np.float32) + 0.5 * (s - 1))
 
     def __call__(self, bgr):
-        """[(class index, score, (x1, y1, x2, y2) in the image's pixels)], best first."""
+        """[(label, score, (x1, y1, x2, y2) in the image's pixels)], best first."""
         h, w = bgr.shape[:2]
         k = self.SIZE / max(h, w)  # letterbox: scale to fit, pad right and bottom
         canvas = np.zeros((self.SIZE, self.SIZE, 3), np.uint8)
@@ -103,8 +116,178 @@ class NanoDet:
         out = []
         for i in idx:
             x1, y1, x2, y2 = np.clip(boxes[i], 0, [w - 1, h - 1, w - 1, h - 1])
-            out.append((int(ids[i]), float(best[i]), (float(x1), float(y1), float(x2), float(y2))))
+            out.append((COCO[int(ids[i])], float(best[i]), (float(x1), float(y1), float(x2), float(y2))))
         return sorted(out, key=lambda o: -o[1])
+
+
+# What a house holds, for an open-vocabulary detector: COCO's indoor classes and what COCO lacks (slippers,
+# cables, mats, doors, shelves, boxes, gym things). One phrase each, singular; the note uses them as labels.
+HOUSEHOLD = ("person, cat, dog, chair, sofa, bed, table, desk, cabinet, shelf, bookshelf, door, window, curtain, "
+             "refrigerator, oven, microwave, sink, toilet, bathtub, television, computer monitor, laptop, keyboard, "
+             "lamp, potted plant, box, bag, backpack, suitcase, basket, laundry basket, trash can, bottle, cup, bowl, "
+             "book, clock, vase, toy, ball, shoe, slipper, sock, cable, power strip, rug, mat, yoga mat, pillow, "
+             "blanket, towel, fan, heater, dumbbell, treadmill, exercise bike, bicycle, robot, charger, umbrella")
+
+
+def nms(dets, iou=0.6, same_label=True):
+    """Greedy NMS over [(label, score, box)] (best kept); same_label False: across labels (one box, one label)."""
+    keep = []
+    for d in sorted(dets, key=lambda o: -o[1]):
+        x1, y1, x2, y2 = d[2]
+        ok = True
+        for k in keep:
+            if same_label and k[0] != d[0]:
+                continue
+            a1, b1, a2, b2 = k[2]
+            iw, ih = max(0.0, min(x2, a2) - max(x1, a1)), max(0.0, min(y2, b2) - max(y1, b1))
+            inter = iw * ih
+            union = (x2 - x1) * (y2 - y1) + (a2 - a1) * (b2 - b1) - inter
+            if union > 0 and inter / union > iou:
+                ok = False
+                break
+        if ok:
+            keep.append(d)
+    return keep
+
+
+class OWLv2:
+    """An open-vocabulary detector on the GPU (OWLv2, google/owlv2-base-patch16-ensemble, Apache-2.0): every label
+    is a text query, encoded once at start; a frame costs one pass of the image encoder however many labels.
+    The frame is padded to a square (grey) and scaled to the model's 960 px on the GPU."""
+
+    MEAN, STD = (0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)
+
+    def __init__(self, model_id, labels, threshold=0.20, device="cuda"):
+        import torch
+        from transformers import Owlv2ForObjectDetection, Owlv2Processor
+        self.torch, self.device = torch, device
+        proc = Owlv2Processor.from_pretrained(model_id)
+        self.model = Owlv2ForObjectDetection.from_pretrained(model_id).to(device).eval()
+        self.labels = [w.strip() for w in labels.split(",") if w.strip()]
+        self.size = proc.image_processor.size["height"]
+        t = proc(text=[[f"a photo of a {w}" for w in self.labels]], return_tensors="pt").to(device)
+        with torch.inference_mode():
+            q = self.model.owlv2.get_text_features(input_ids=t.input_ids, attention_mask=t.attention_mask)
+        self.query = q[None]  # (1, labels, d)
+        self.qmask = torch.ones(self.query.shape[:2], dtype=torch.bool, device=device)
+        self.mean = torch.tensor(self.MEAN, device=device).view(1, 3, 1, 1)
+        self.std = torch.tensor(self.STD, device=device).view(1, 3, 1, 1)
+        self.threshold = threshold
+
+    def __call__(self, bgr):
+        torch = self.torch
+        h, w = bgr.shape[:2]
+        s = max(h, w)
+        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16, enabled=self.device != "cpu"):
+            x = torch.from_numpy(np.ascontiguousarray(bgr[..., ::-1])).to(self.device).permute(2, 0, 1)[None].float() / 255
+            sq = torch.full((1, 3, s, s), 0.5, device=self.device)
+            sq[..., :h, :w] = x
+            x = (torch.nn.functional.interpolate(sq, size=(self.size, self.size), mode="bilinear", align_corners=False)
+                 - self.mean) / self.std
+            fmap = self.model.image_embedder(pixel_values=x)[0]
+            b, gh, gw, d = fmap.shape
+            feats = fmap.reshape(b, gh * gw, d)
+            logits = self.model.class_predictor(feats, self.query, self.qmask)[0]
+            boxes = self.model.box_predictor(feats, fmap)
+        scores = torch.sigmoid(logits[0].float())  # (cells, labels)
+        best, ids = scores.max(dim=1)
+        keep = best >= self.threshold
+        best, ids, boxes = best[keep].cpu().numpy(), ids[keep].cpu().numpy(), boxes[0][keep].float().cpu().numpy() * s
+        dets = []
+        for (cx, cy, bw, bh), sc, i in zip(boxes, best, ids):
+            x1, y1 = float(np.clip(cx - bw / 2, 0, w - 1)), float(np.clip(cy - bh / 2, 0, h - 1))
+            x2, y2 = float(np.clip(cx + bw / 2, 0, w - 1)), float(np.clip(cy + bh / 2, 0, h - 1))
+            if x2 - x1 < 2 or y2 - y1 < 2 or (x2 - x1) * (y2 - y1) > 0.9 * w * h:
+                continue
+            dets.append((label_name(self.labels[int(i)]), float(sc), (x1, y1, x2, y2)))
+        return nms(nms(dets, 0.5), 0.85, same_label=False)
+
+
+def label_name(phrase):
+    """An open-vocabulary phrase as a label: lower case, words joined by '_' (COCO's style)."""
+    return "_".join(phrase.lower().replace(".", " ").split())
+
+
+class GroundingDINO:
+    """An open-vocabulary detector on the GPU (transformers' zero-shot object detection: Grounding DINO,
+    IDEA-Research/grounding-dino-base, Apache-2.0): labels from a list of phrases, so it names what COCO has
+    no class for. The phrases go in chunks (the text encoder takes 256 tokens), one batch per frame."""
+
+    def __init__(self, model_id, labels, threshold=0.35, text_threshold=0.30, device="cuda", chunk=64, size=480):
+        import torch
+        from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
+        self.torch, self.device = torch, device
+        self.proc = AutoProcessor.from_pretrained(model_id)
+        # A QVGA frame needs no 800 px (the processor's default): twice the camera's, and the time goes with the pixels.
+        self.proc.image_processor.size = {"shortest_edge": size, "longest_edge": int(size * 4 / 3) + 1}
+        self.model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(device).eval()
+        words = [w.strip() for w in labels.split(",") if w.strip()]
+        self.prompts = [". ".join(words[i:i + chunk]) + "." for i in range(0, len(words), chunk)]
+        self.threshold, self.text_threshold = threshold, text_threshold
+
+    def __call__(self, bgr):
+        from PIL import Image
+        h, w = bgr.shape[:2]
+        img = Image.fromarray(bgr[..., ::-1])
+        inp = self.proc(images=[img] * len(self.prompts), text=self.prompts, padding=True, return_tensors="pt").to(self.device)
+        with self.torch.inference_mode(), self.torch.autocast("cuda", dtype=self.torch.float16, enabled=self.device != "cpu"):
+            out = self.model(**inp)
+        out.logits, out.pred_boxes = out.logits.float(), out.pred_boxes.float()
+        res = self.proc.post_process_grounded_object_detection(
+            out, inp.input_ids, threshold=self.threshold, text_threshold=self.text_threshold,
+            target_sizes=[(h, w)] * len(self.prompts))
+        dets = []
+        for r in res:
+            for box, score, lab in zip(r["boxes"].tolist(), r["scores"].tolist(), r.get("text_labels", r["labels"])):
+                if not lab:
+                    continue  # no phrase above text_threshold
+                x1, y1, x2, y2 = (float(np.clip(box[0], 0, w - 1)), float(np.clip(box[1], 0, h - 1)),
+                                  float(np.clip(box[2], 0, w - 1)), float(np.clip(box[3], 0, h - 1)))
+                if (x2 - x1) * (y2 - y1) > 0.9 * w * h:
+                    continue  # "the whole frame is a floor/door/room": not an object
+                dets.append((label_name(lab), float(score), (x1, y1, x2, y2)))
+        return nms(nms(dets, 0.5), 0.85, same_label=False)
+
+
+class _OnnxDisparity:
+    """Depth Anything V2 Small, ONNX on the CPU (266 px)."""
+
+    SIZE = 266  # 19 x 14, the ViT's patch
+
+    def __init__(self, path, threads=4):
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        so.intra_op_num_threads, so.inter_op_num_threads = threads, 1  # a cell's cpuset: ort cannot pin more
+        so.log_severity_level = 3
+        self.sess = ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
+        self.inp = self.sess.get_inputs()[0].name
+
+    def __call__(self, bgr):
+        h, w = bgr.shape[:2]
+        x = cv2.resize(bgr, (self.SIZE, self.SIZE), interpolation=cv2.INTER_AREA)[..., ::-1].astype(np.float32) / 255
+        x = (x - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
+        out = self.sess.run(None, {self.inp: x.transpose(2, 0, 1)[None].astype(np.float32)})[0]
+        return cv2.resize(out.reshape(self.SIZE, self.SIZE), (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+class _HFDisparity:
+    """Depth Anything V2 (any size) through transformers on the GPU, at the model's own 518 px."""
+
+    def __init__(self, model_id, device="cuda"):
+        import torch
+        from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+        self.torch, self.device = torch, device
+        self.proc = AutoImageProcessor.from_pretrained(model_id)
+        self.model = AutoModelForDepthEstimation.from_pretrained(model_id).to(device).eval()
+
+    def __call__(self, bgr):
+        from PIL import Image
+        h, w = bgr.shape[:2]
+        inp = self.proc(images=Image.fromarray(bgr[..., ::-1]), return_tensors="pt").to(self.device)
+        with self.torch.inference_mode():
+            d = self.model(**inp).predicted_depth  # relative inverse depth, as the ONNX model's
+            d = self.torch.nn.functional.interpolate(d[:, None], size=(h, w), mode="bilinear", align_corners=False)
+        return d[0, 0].float().cpu().numpy()
 
 
 def ground_point(u, v, K, D, height, pitch, roll=0.0, cam_x=0.0, cam_y=0.0):
@@ -122,29 +305,17 @@ def ground_point(u, v, K, D, height, pitch, roll=0.0, cam_x=0.0, cam_y=0.0):
 
 
 class Depth:
-    """Depth Anything V2 Small (Apache-2.0; onnx-community/depth-anything-v2-small): relative inverse depth
-    per pixel, made metric by the floor. Where a pixel is floor, its depth is known from the geometry
+    """Depth Anything V2: relative inverse depth per pixel, made metric by the floor. `path` an ONNX file runs
+    Small on the CPU (Apache-2.0; onnx-community/depth-anything-v2-small); `hf:<model id>` runs that model through
+    transformers on `device` (depth-anything/Depth-Anything-V2-Small-hf, Apache-2.0; -Base-hf and -Large-hf are
+    CC-BY-NC-4.0: non-commercial use only). Where a pixel is floor, its depth is known from the geometry
     (height, tilt, the ray); the model's output is inverse depth up to a scale and an offset, fitted on
     the floor in front of the feet and refitted on every pixel that agrees. A point that then stands
     more than `rise` above the floor is an obstacle: walls and doors as well as objects of no class."""
 
-    SIZE = 266  # 19 x 14, the ViT's patch
-
-    def __init__(self, path, threads=4, rise=0.045):
-        import onnxruntime as ort
-        so = ort.SessionOptions()
-        so.intra_op_num_threads, so.inter_op_num_threads = threads, 1  # a cell's cpuset: ort cannot pin more
-        so.log_severity_level = 3
-        self.sess = ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
-        self.inp = self.sess.get_inputs()[0].name
+    def __init__(self, path, threads=4, rise=0.045, device="cuda"):
+        self.disparity = _HFDisparity(path[3:], device) if path.startswith("hf:") else _OnnxDisparity(path, threads)
         self.rise, self.rays, self.key = rise, None, None
-
-    def disparity(self, bgr):
-        h, w = bgr.shape[:2]
-        x = cv2.resize(bgr, (self.SIZE, self.SIZE), interpolation=cv2.INTER_AREA)[..., ::-1].astype(np.float32) / 255
-        x = (x - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
-        out = self.sess.run(None, {self.inp: x.transpose(2, 0, 1)[None].astype(np.float32)})[0]
-        return cv2.resize(out.reshape(self.SIZE, self.SIZE), (w, h), interpolation=cv2.INTER_LINEAR)
 
     def camera_rays(self, K, D, w, h):
         """Per pixel, the undistorted ray in camera_link (x ahead = optical z = 1, y left, z up)."""
@@ -233,16 +404,24 @@ def main():
         def __init__(self):
             super().__init__("camera_vision")
             p = lambda n, d: self.declare_parameter(n, d).value
-            path = p("model_path", "")
-            if not path:
-                raise SystemExit("camera_vision: set model_path (the NanoDet-Plus ONNX)")
-            self.det = NanoDet(path, float(p("score", 0.40)))
+            path, detector = p("model_path", ""), p("detector", "nanodet")
+            device = p("device", "cuda")
+            if detector == "owlv2":
+                self.det = OWLv2(path or "google/owlv2-base-patch16-ensemble", p("labels", HOUSEHOLD),
+                                 float(p("score", 0.20)), device)
+            elif detector == "grounding_dino":
+                self.det = GroundingDINO(path or "IDEA-Research/grounding-dino-base", p("labels", HOUSEHOLD),
+                                         float(p("score", 0.35)), float(p("text_threshold", 0.30)), device)
+            elif path:
+                self.det = NanoDet(path, float(p("score", 0.40)))
+            else:
+                raise SystemExit("camera_vision: set model_path (the NanoDet-Plus ONNX), or detector:=owlv2|grounding_dino")
             self.height, self.cam_x = float(p("cam_height", 0.1575)), float(p("cam_x", 0.065))
             self.cam_y = float(p("cam_y", -0.005))
             self.mount = math.radians(float(p("mount_pitch_deg", 2.3)))
             self.period = 1.0 / float(p("rate", 5.0))
             dpath = p("depth_model_path", "")
-            self.depth = Depth(dpath, int(p("threads", 4)), float(p("climb_height", 0.045))) if dpath else None
+            self.depth = Depth(dpath, int(p("threads", 4)), float(p("climb_height", 0.045)), device) if dpath else None
             self.K = self.D = None
             self.pitch = self.roll = 0.0
             self.frame, self.lock, self.wake = None, threading.Lock(), threading.Event()
@@ -299,7 +478,7 @@ def main():
             t2 = time.time()
             objs, arr = [], Detection2DArray()
             arr.header = m.header
-            for cid, score, (x1, y1, x2, y2) in self.det(bgr):
+            for label, score, (x1, y1, x2, y2) in self.det(bgr):
                 g, how = gp((x1 + x2) / 2, y2), "floor contact"
                 if fit:  # the box's own obstacle pixels, nearest quarter: holds for a box cut by the frame too
                     sub = obst[int(y1):int(y2) + 1, int(x1):int(x2) + 1]
@@ -308,7 +487,7 @@ def main():
                         ys = Y[int(y1):int(y2) + 1, int(x1):int(x2) + 1][sub]
                         near = xs <= np.percentile(xs, 25)
                         g, how = (float(np.median(xs[near])), float(np.median(ys[near]))), "depth"
-                o = {"label": COCO[cid], "score": round(score, 2), "box": [round(x1), round(y1), round(x2), round(y2)],
+                o = {"label": label, "score": round(score, 2), "box": [round(x1), round(y1), round(x2), round(y2)],
                      "clipped": y2 >= h - 3, "from": how}
                 if g:
                     o.update(x=round(g[0], 3), y=round(g[1], 3), dist=round(math.hypot(*g), 3),
@@ -319,7 +498,7 @@ def main():
                 d.bbox.center.position.x, d.bbox.center.position.y = (x1 + x2) / 2, (y1 + y2) / 2
                 d.bbox.size_x, d.bbox.size_y = x2 - x1, y2 - y1
                 hyp = ObjectHypothesisWithPose()
-                hyp.hypothesis.class_id, hyp.hypothesis.score = COCO[cid], score
+                hyp.hypothesis.class_id, hyp.hypothesis.score = label, score
                 if g:
                     hyp.pose.pose.position.x, hyp.pose.pose.position.y = g
                 d.results.append(hyp)

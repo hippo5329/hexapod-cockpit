@@ -97,6 +97,39 @@ tilt is 0.5 m. The colour of the floor alone cannot separate it from white doors
 the depth. The class names are COCO's: white closet doors come out as "refrigerator", furniture as
 "chair", "bed" or "oven"; the obstacles do not depend on them.
 
+### On a GPU
+
+With a CUDA GPU, the detector and the depth can be larger models through PyTorch and transformers:
+
+`ros2 run hexapod_bringup camera_vision --ros-args -p detector:=owlv2 -p depth_model_path:=hf:depth-anything/Depth-Anything-V2-Large-hf`
+
+| | CPU (default) | GPU (RTX 5090, 320x240 frames) |
+|---|---|---|
+| objects | NanoDet-Plus, COCO's 80 classes, 37 ms | OWLv2 base, open vocabulary (`labels`, default `HOUSEHOLD`), 32 ms |
+| depth | Depth Anything V2 Small at 266 px | V2 Large at 518 px, 38 ms |
+| frame | 122 ms (3.8 Hz) | 72 ms (the camera's 5 fps) |
+
+**Labels.** The open-vocabulary detector labels from a list of phrases. It names what COCO has no class for:
+a slipper (score 0.22), folded towels, doors, cabinets and shelves. NanoDet found nothing in the same frames. Its
+scores run lower than NanoDet's (keep 0.20 and up), and its mistakes are its own: a checkerboard came out as
+"refrigerator" and a shelf as "bathtub".
+
+**Depth.** On the two checkerboard frames, with the same floor fit, the boards (0.501 and 0.998 m away) read:
+
+| model | 0.501 m board | 0.998 m board |
+|---|---|---|
+| Small at 266 (ONNX, CPU) | 0.595 | 1.862 |
+| Small at 518 | 0.506 | 1.192 |
+| Base | 0.522 | 1.182 |
+| Large | 0.518 | 1.109 |
+
+Grounding DINO (`detector:=grounding_dino`) takes 46 ms: its deformable attention runs in plain PyTorch, so it is
+fed the frame at 480 px rather than 800, all its phrases in one prompt, at fp16. OWLv2 large takes 161 ms and found
+the same labels.
+
+Licences: OWLv2, Grounding DINO and Depth Anything V2 Small are Apache-2.0. **V2 Base and Large are
+CC-BY-NC-4.0, for non-commercial use only**, so the default stays Small.
+
 ## Object survey while exploring (`object_survey`)
 
 `ros2 run hexapod_bringup object_survey --ros-args -p note_prefix:=<path> [-p rooms_file:=<rooms.json> -p home_pose:=x,y,yaw_deg]`
@@ -125,4 +158,4 @@ After every survey and at the end, the survey rewrites its note:
 
 Rooms are polygons in the **home frame**: home's position is the origin and its heading is +x. A map made fresh
 at home each run keeps the rooms where they are. `home_pose` places home on the run's map. A TERM stops the
-survey: it cancels a turn under way and writes the note. The labels are COCO's, with COCO's mistakes (above).
+survey: it cancels a turn under way and writes the note. The labels are the detector's, with its mistakes (above); with OWLv2 pass `min_score:=0.2 confirm_score:=0.5`.
