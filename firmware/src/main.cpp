@@ -157,24 +157,40 @@ bool parse_trims(const String& csv, int16_t* out) {
     return true;
 }
 
-// The gait at boot: NVS "gait" tripod (default) or quad (hexa_gait.h quad_gait_params(): the middle
-// legs up, the corner legs crawl); "com" x,y mm, the centre of mass the quadruped's sway places.
-// /gait_params's fifth value and the console's `gait` switch at run time (not kept).
-bool boot_quad = false;
+// The gait at boot: NVS "gait" tripod (default), quad (hexa_gait.h quad_gait_params(): the middle
+// legs up, the corner legs crawl), high (high_gait_params(): the body 20 mm up, a 50 mm swing, over
+// cables and pipes) or climb (climb_gait_params(): the highest body and swing, the climb pose); "com"
+// x,y mm, the centre of mass the quadruped's sway places. /gait_params's fifth value and the
+// console's `gait` switch at run time (not kept).
+const char* const kGaitModes[] = {"tripod", "quad", "high", "climb"};
+constexpr int kGaitModeCount = 4;
+int boot_gait = 0;
 float com_x_m = 0, com_y_m = 0;
 
-// A mode's defaults, with the robot's centre of mass.
-GaitParams gait_preset(bool quad) {
-    GaitParams p = quad ? quad_gait_params() : GaitParams();
+// A mode's defaults (index into kGaitModes), with the robot's centre of mass.
+GaitParams gait_preset(int mode) {
+    GaitParams p = mode == 1 ? quad_gait_params() : mode == 2 ? high_gait_params() : mode == 3 ? climb_gait_params() : GaitParams();
     p.com_x = com_x_m;
     p.com_y = com_y_m;
     return p;
 }
 
+int gait_mode_index(const String& name) {
+    for (int i = 0; i < kGaitModeCount; ++i)
+        if (name == kGaitModes[i]) return i;
+    return -1;
+}
+
+// What the parameters are, by name: a raised body is high, the climb pose's height or more is climb.
+const char* gait_mode_name(const GaitParams& p) {
+    return p.quad ? "quad" : p.height >= climb_gait_params().height - 1e-4f ? "climb" : p.height > 0 ? "high" : "tripod";
+}
+
 void robot_init() {
     robot.init();  // slip 0.05, as the host simulator; the tripod
     // The quadruped from boot: taken at once (the gait stands), the middle feet rise in the first second.
-    if (boot_quad) robot.set_gait_params(gait_preset(true));
+    // A raised body rises in its first seconds the same way.
+    if (boot_gait) robot.set_gait_params(gait_preset(boot_gait));
     robot.set_trims(trims);
     sim_imu.init();
     gyro_bias.init();
@@ -315,8 +331,8 @@ rcl_node_t node;
 rclc_executor_t executor;
 rcl_subscription_t cmd_sub, gait_sub, shutdown_sub, pose_sub, foot_sub;
 // gait_params (std_msgs/Float32MultiArray): period s, duty, lift m, max stride m [, mode: 0 tripod,
-// 1 quad]. With a mode, its defaults first (gait_preset) and a value of 0 keeps the default's: [0, 0,
-// 0, 0, 1] is the quadruped as it comes. Applied when the gait next stands, if valid
+// 1 quad, 2 high, 3 climb [, body height m]]. With a mode, its defaults first (gait_preset) and a value
+// of 0 keeps the default's: [0, 0, 0, 0, 1] is the quadruped as it comes, [0, 0, 0, 0, 2] the high walk. Applied when the gait next stands, if valid
 // (TripodGait::params_valid); the console's `info` shows them.
 std_msgs__msg__Float32MultiArray gait_msg;
 float gait_msg_data[8];
@@ -372,14 +388,17 @@ void cmd_callback(const void* msg) {
 
 void gait_callback(const void* msg) {
     const auto* m = static_cast<const std_msgs__msg__Float32MultiArray*>(msg);
-    if (m->data.size != 4 && m->data.size != 5) return;
+    if (m->data.size < 4 || m->data.size > 6) return;
     const float* d = m->data.data;
-    const bool mode = m->data.size == 5;
-    if (mode && d[4] != 0 && d[4] != 1) return;
-    GaitParams p = mode ? gait_preset(d[4] == 1) : robot.gait_params();
-    float* const f[4] = {&p.period_s, &p.duty, &p.lift, &p.max_stride};
-    for (int i = 0; i < 4; ++i)
-        if (!mode || d[i] != 0) *f[i] = d[i];
+    const bool mode = m->data.size >= 5;
+    const int mi = mode ? static_cast<int>(d[4]) : 0;
+    if (mode && (d[4] != mi || mi < 0 || mi >= kGaitModeCount)) return;
+    GaitParams p = mode ? gait_preset(mi) : robot.gait_params();
+    float* const f[5] = {&p.period_s, &p.duty, &p.lift, &p.max_stride, &p.height};
+    for (int i = 0; i < 5; ++i) {
+        const int k = i < 4 ? i : 5;
+        if (k < static_cast<int>(m->data.size) && (!mode || d[k] != 0)) *f[i] = d[k];
+    }
     if (p.quad && p.max_period_s < p.period_s) p.max_period_s = p.period_s;
     if (!TripodGait::params_valid(p)) {
         hexa_log::log(hexa_log::kWarning, "gait_params: refused (out of range)");
@@ -387,8 +406,8 @@ void gait_callback(const void* msg) {
     }
     pending_gait = p;
     gait_pending = true;
-    hexa_log::log(hexa_log::kInfo, "gait_params: %s, period %.2f s, duty %.2f, lift %.3f m, stride %.3f m (when it stands)",
-                  p.quad ? "quad" : "tripod", p.period_s, p.duty, p.lift, p.max_stride);
+    hexa_log::log(hexa_log::kInfo, "gait_params: %s, period %.2f s, duty %.2f, lift %.3f m, stride %.3f m, height %.3f m (when it stands)",
+                  gait_mode_name(p), p.period_s, p.duty, p.lift, p.max_stride, p.height);
 }
 
 void foot_callback(const void* msg) {
@@ -798,12 +817,12 @@ void base_loop() {
     if (link_cfg.kind == hexa_link::Kind::kWifi && t_start - last_report > 30000) {
         last_report = t_start;
         hexa_log::log(hexa_log::kInfo,
-                      "health: battery %d mV  rssi %d dBm  sessions %u  loop max %u ms  late ticks %u  gait %s%s  "
+                      "health: battery %d mV  rssi %d dBm  sessions %u  loop max %u ms  late ticks %u  gait %s (%s)  "
                       "cycle %.2f s  yaw lost %+.3f rad  pose %+.0f/%+.0f/%+.0f deg %+.0f mm  tilt trim %+.1f/%+.1f  sonar %.2f m  unreachable %u",
                       battery_mv, static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(sessions),
                       static_cast<unsigned>(loop_max_ms), static_cast<unsigned>(late_ticks),
                       robot.resting() ? "lying" : robot.rest_level() > 0 ? "between" : robot.gait().standing() ? "standing" : "walking",
-                      robot.gait_params().quad ? " (quad)" : "", robot.gait().period(), yaw_hold.error(), robot.pose().roll * RAD_TO_DEG,
+                      gait_mode_name(robot.gait_params()), robot.gait().period(), yaw_hold.error(), robot.pose().roll * RAD_TO_DEG,
                       robot.pose().pitch * RAD_TO_DEG, robot.pose().yaw * RAD_TO_DEG, robot.pose().z * 1000,
                       tilt_hold.roll() * RAD_TO_DEG, tilt_hold.pitch() * RAD_TO_DEG, sonar_msg.range, static_cast<unsigned>(unreachable));
         loop_max_ms = late_ticks = 0;
@@ -880,9 +899,10 @@ void console_info() {
                   imu_mount.roll() * RAD_TO_DEG, imu_mount.pitch() * RAD_TO_DEG);
     Serial.printf("sonar %s\n", sim_mode ? "simulated" : real_sonar ? "I2C 0x77 (real)" : "none (did not answer)");
     const GaitParams& gp = robot.gait_params();
-    Serial.printf("gait %s  period %.2f-%.2f s (in use %.2f)  duty %.2f  lift %.3f m  max stride %.3f m%s\n",
-                  gp.quad ? "quad" : "tripod", gp.period_s, gp.max_period_s, robot.gait().period(), gp.duty, gp.lift,
-                  gp.max_stride, gait_pending ? "  (new ones pending: applied when it stands)" : "");
+    Serial.printf("gait %s  period %.2f-%.2f s (in use %.2f)  duty %.2f  lift %.3f m  max stride %.3f m  height %.3f m (floor %.0f mm)%s\n",
+                  gait_mode_name(gp), gp.period_s, gp.max_period_s, robot.gait().period(), gp.duty, gp.lift,
+                  gp.max_stride, gp.height, robot.gait().floor_z() * 1000,
+                  gait_pending ? "  (new ones pending: applied when it stands)" : "");
     if (gp.quad)
         Serial.printf("quad: margin %.0f mm  sway %.2f m/s (now %+.0f, %+.0f mm)  centre of mass %+.1f, %+.1f mm  middle feet %s\n",
                       gp.margin * 1000, gp.sway_speed, robot.gait().sway_x() * 1000, robot.gait().sway_y() * 1000,
@@ -1013,11 +1033,11 @@ void console_command(String cmd) {
         }
     } else if (cmd == "reboot") {
         ESP.restart();
-    } else if (cmd == "gait quad" || cmd == "gait tripod") {
+    } else if (cmd.startsWith("gait ") && gait_mode_index(cmd.substring(5)) >= 0) {
         // The mode at run time (base app; not kept: NVS "gait" is the boot's), taken when it stands.
         if (console) Serial.println("refused: the console app drives no gait");
         else {
-            pending_gait = gait_preset(cmd == "gait quad");
+            pending_gait = gait_preset(gait_mode_index(cmd.substring(5)));
             gait_pending = true;
             Serial.printf("gait %s: taken when the robot stands\n", cmd.c_str() + 5);
         }
@@ -1036,7 +1056,7 @@ void console_command(String cmd) {
         if (console) deep_sleep();
         else shutdown_request("console");
     } else if (cmd.length()) {
-        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | foot <leg> <dx> <dy> <dz> [ms] | trims | bat | sonar | imu | uart [s] [baud] | app base|console | sim on|off | gait tripod|quad | reboot | shutdown | pose [r p y [x y z]]");
+        Serial.println("commands: info | link | i2c | servo <id> <us> [ms] | foot <leg> <dx> <dy> <dz> [ms] | trims | bat | sonar | imu | uart [s] [baud] | app base|console | sim on|off | gait tripod|quad|high|climb | reboot | shutdown | pose [r p y [x y z]]");
     }
 }
 
@@ -1107,8 +1127,8 @@ void setup() {
         else Serial.println("tilt_hold: NVS value refused, 1.5 used");
     }
     const String gait_str = prefs.getString("gait", "");
-    if (gait_str == "quad") boot_quad = true;
-    else if (!gait_str.isEmpty() && gait_str != "tripod") Serial.println("gait: NVS value refused, tripod used");
+    if (gait_mode_index(gait_str) >= 0) boot_gait = gait_mode_index(gait_str);
+    else if (!gait_str.isEmpty()) Serial.println("gait: NVS value refused, tripod used");
     const String com_str = prefs.getString("com", "");
     if (!com_str.isEmpty()) {
         const int comma = com_str.indexOf(',');

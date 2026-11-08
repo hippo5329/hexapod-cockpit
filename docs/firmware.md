@@ -72,7 +72,7 @@ firmware (`tools/make_nvs.py <settings file> <out.bin>`, flashed at 0x9000; OTA 
 | `syslog_ip`, `syslog_port` | the UDP syslog sink (Syslog, below); port default 5140; none: no syslog |
 | `tilt_hold` | body tilt feedback gain while standing (Tilt hold, below), 1/s, 0-5; default 1.5; `0`: off |
 | `yaw_hold` | heading hold / turn-rate feedback gain (Gait, below), 1/s, 0-5; default 1.0; `0`: off |
-| `gait` | `tripod` (default) or `quad`: the gait at boot (Quadruped, below) |
+| `gait` | `tripod` (default), `quad`, `high` or `climb`: the gait at boot (Gait, below) |
 | `com` | `x,y` in mm (each within ±30): the centre of mass off the body's origin (x forward, y left), for the quadruped's sway; default `0,0` |
 | `imu_level` | `roll,pitch` in degrees (each within ±10): how the IMU sits on its board, read with the body level (a level on the top plate) from the console's `imu`. Every IMU sample is turned into the body frame with it; none: the board is taken as level |
 
@@ -172,11 +172,38 @@ same whatever ground it covers, so fewer, longer steps save power (at 0.02 m/s a
 meanwhile. A command that moves no foot faster than 2 mm/s counts as zero, so the gait does not step on the spot.
 `info` and the `health` line show the cycle in use.
 
+**Reach.** A command that changes mid-stance moves a stance foot on from where the last one left it. A reversal
+once carried a foot landed half a stride ahead a full stride further, 1.5 strides from its neutral spot. The gait
+now scales such a command down until every stance foot ends its stance within one stride of neutral, which is
+what a start from standing takes. A steady walk is never slowed; a reversal every 1.3 s covers 2.5 % less ground.
+
 `/gait_params` (`std_msgs/Float32MultiArray`: period s, duty, lift m, longest stride m) changes them at run time.
-They are taken when the gait next stands and only within bounds (period 0.5-3 s, duty 0.5-0.8, lift 10-40 mm,
-stride 10-60 mm); `info` shows the ones in use. A fifth value switches the mode: `0` tripod, `1` quadruped. The
-mode's defaults come first, and a `0` among the other four keeps the default's, so `[0, 0, 0, 0, 1]` is the
-quadruped as it comes and `[0, 0, 0, 0, 0]` the tripod's defaults.
+They are taken when the gait next stands and only within bounds: period 0.5-3 s, duty 0.5-0.8, body height 0-40 mm,
+lift 10 mm up to 40 mm plus the height (80 at most), stride 10 mm up to 65 mm less the height (60 at most).
+`info` shows the ones in use. A fifth value switches the mode: `0` tripod, `1` quadruped, `2` high walk, `3` climb
+pose; a sixth sets the body height (m). The mode's defaults come first, and a `0` among the other values keeps the
+default's, so `[0, 0, 0, 0, 1]` is the quadruped as it comes and `[0, 0, 0, 0, 0]` the tripod's defaults.
+
+**High walk and climb pose.** With `gait=high` or `gait=climb` (NVS, at boot), `/gait_params`'s mode `2` or `3`,
+or the console's `gait high` or `gait climb` (both at run time, not kept), the body stands higher: every foot
+goes lower in the body frame. The cockpit's Hexapod tab has buttons for all four modes. The switch is taken while
+the robot stands: the body rises (or comes down for `gait tripod`) at 2 cm/s, and walking waits for it.
+
+| mode | body up | belly off the floor | swing | stride | cycle | top speed |
+|---|---|---|---|---|---|---|
+| tripod | 0 | 45 mm | 30 mm | 60 mm | 0.8-3 s, duty 0.7 | 107 mm/s |
+| high | 20 mm | 65 mm | 50 mm | 45 mm | 1.0-3 s, duty 0.7 | 64 mm/s |
+| climb | 40 mm | 85 mm | 80 mm | 25 mm | 2.0-4 s, duty 0.75 | 17 mm/s |
+
+The **high walk** steps over cables and pipes up to about 45 mm: the feet clear them and so does the belly. The
+**climb pose** is the highest body the legs still walk with: a front foot reaches 80 mm above the floor, and the
+belly clears 85 mm. A step any higher would meet the body, whatever the legs reach. The gait does not feel a step:
+a foot landing on one is a foot landing high, which tilts the body until it steps off again. A raised body leaves
+less leg for the stride, about 5 mm less for every 5 mm of height. The figures come from
+`sim/tools/high_walk_sim.cpp`: every corner of the bounds above was walked at top speed each way, then for 120 s of
+commands changing every 0.2-1 s, with no foot out of reach and every servo at least 37 µs inside its range (the
+presets 117 µs or more). Nav2 is tuned for the tripod; drive the high walk and the climb pose by teleop. `info` and
+the `health` line name the mode.
 
 **Quadruped.** With `gait=quad` (NVS, at boot), `/gait_params`'s mode `1` or the console's `gait quad` (both at
 run time, not kept), the middle legs go up, 40 mm above the stance floor, and the four corner legs crawl one

@@ -82,6 +82,21 @@
         <canvas class="hx-chart" id="hx-sonar-chart"></canvas>
         <div class="hx-sub">Last ${HISTORY_S / 60} min, 0 to the sensor's max range.</div>
       </div>
+      <div class="card" id="hx-gait-card">
+        <h2>🦵 Gait <code class="u-text-0-7rem">/gait_params</code></h2>
+        <div class="row">
+          <button class="btn" data-gait="0" title="Body at the standard height, 30 mm swing, up to 107 mm/s">Tripod</button>
+          <button class="btn" data-gait="2" title="Body 20 mm up (belly 65 mm), 50 mm swing, up to 64 mm/s">High walk</button>
+          <button class="btn" data-gait="3" title="Body 40 mm up (belly 85 mm), 80 mm swing, up to 17 mm/s">Climb pose</button>
+          <button class="btn" data-gait="1" title="Middle legs up, the four corners crawl, up to 20 mm/s">Quadruped</button>
+        </div>
+        <div class="hx-sub" id="hx-gait-sub">not sent</div>
+        <div class="hx-sub"><b>High walk</b> steps over cables and pipes up to about 4.5 cm: the feet swing 5 cm
+          high and the belly clears 6.5 cm. <b>Climb pose</b> raises the body as high as the legs still walk:
+          the feet swing 8 cm high and the belly clears 8.5 cm, at a slow crawl. A new gait is taken when the
+          robot stands; the body rises or lowers at 2 cm/s before it walks. Nav2 is tuned for the tripod: drive
+          the others by teleop.</div>
+      </div>
       <div class="card hx-cam">
         <h2>📷 Camera</h2>
         <div class="row">
@@ -192,6 +207,7 @@
     };
     ws.onclose = () => {
       ws = null;
+      gaitAdvertised = false;
       setLink(wsWanted ? "rosbridge lost, retrying" : "not connected", wsWanted ? "pill-off" : "badge-idle");
       if (wsWanted) wsTimer = setTimeout(wsConnect, 3000);
     };
@@ -203,6 +219,24 @@
     clearTimeout(wsTimer);
     if (ws) { try { ws.close(); } catch { /* gone */ } }
   }
+
+  // ------------------------------------------------------------ gait
+  // The firmware's gait_params: [period, duty, lift, stride, mode], zeros keep the mode's defaults
+  // (0 tripod, 1 quad, 2 high, 3 climb). Best effort on the board, so sent three times (idempotent).
+  const GAIT_NAMES = { 0: "tripod", 1: "quadruped", 2: "high walk", 3: "climb pose" };
+  let gaitAdvertised = false;
+  function sendGait(mode) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) { $("hx-gait-sub").textContent = "rosbridge not connected"; return; }
+    if (!gaitAdvertised) {
+      ws.send(JSON.stringify({ op: "advertise", topic: "/gait_params", type: "std_msgs/msg/Float32MultiArray" }));
+      gaitAdvertised = true;
+    }
+    const msg = { layout: { dim: [], data_offset: 0 }, data: [0, 0, 0, 0, mode] };
+    for (let i = 0; i < 3; i++)
+      setTimeout(() => { if (ws) ws.send(JSON.stringify({ op: "publish", topic: "/gait_params", msg })); }, i * 300);
+    $("hx-gait-sub").textContent = `sent: ${GAIT_NAMES[mode]} at ${new Date().toLocaleTimeString()} (taken when it stands)`;
+  }
+  pane.querySelectorAll("[data-gait]").forEach((b) => b.addEventListener("click", () => sendGait(Number(b.dataset.gait))));
 
   // ------------------------------------------------------------ battery
   let batMin = Infinity, batMax = -Infinity;

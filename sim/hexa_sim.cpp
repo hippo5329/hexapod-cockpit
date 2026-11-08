@@ -8,10 +8,11 @@
 //
 //   hexa_sim [--slip 0.05] [--csv out.csv] [--quiet] [--quad] [--com x_mm,y_mm] [--set key=value]...
 //
-// --set overrides a gait parameter (period, duty, stride, lift, margin, sway, mid_lift, mid_reach,
+// --set overrides a gait parameter (period, duty, stride, lift, height, margin, sway, mid_lift, mid_reach,
 // max_period, com_x, com_y (what the gait believes; --com is the truth); metres and seconds), after
 // --quad's defaults.
-// --quad: the quadruped crawl (quad_gait_params(): middle legs up). --com: the centre of mass
+// --quad: the quadruped crawl (quad_gait_params(): middle legs up). --high, --climb: the high walk and the
+// climb pose (high_gait_params(), climb_gait_params(): the body raised; height in --set). --com: the centre of mass
 // that far off the body's origin (body frame), for the static stability check.
 //
 // Exit 0 when every scenario passed: no unreachable foot, no clamped pulse, the robot
@@ -42,6 +43,7 @@ int main(int argc, char** argv) {
     double slip = 0.05;
     const char* csv_path = nullptr;
     bool quiet = false, quad = false;
+    const char* preset = "tripod";
     float com_x = 0, com_y = 0;
     const char* sets[16];
     int nsets = 0;
@@ -50,15 +52,18 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--csv") && i + 1 < argc) csv_path = argv[++i];
         else if (!std::strcmp(argv[i], "--quiet")) quiet = true;
         else if (!std::strcmp(argv[i], "--quad")) quad = true;
+        else if (!std::strcmp(argv[i], "--high") || !std::strcmp(argv[i], "--climb")) preset = argv[i] + 2;
         else if (!std::strcmp(argv[i], "--set") && i + 1 < argc && nsets < 16) sets[nsets++] = argv[++i];
         else if (!std::strcmp(argv[i], "--com") && i + 1 < argc && std::sscanf(argv[i + 1], "%f,%f", &com_x, &com_y) == 2) ++i;
-        else { std::fprintf(stderr, "usage: hexa_sim [--slip f] [--csv file] [--quiet] [--quad] [--com x_mm,y_mm]\n"); return 2; }
+        else { std::fprintf(stderr, "usage: hexa_sim [--slip f] [--csv file] [--quiet] [--quad|--high|--climb] [--set key=value] [--com x_mm,y_mm]\n"); return 2; }
     }
     FILE* csv = csv_path ? std::fopen(csv_path, "w") : nullptr;
     if (csv) std::fprintf(csv, "t,scenario,cmd_vx,cmd_vy,cmd_wz,true_x,true_y,true_yaw,odom_x,odom_y,odom_yaw,margin,sway_x,sway_y,feet_down\n");
 
     SimRobot robot;
-    GaitParams gp0 = quad ? quad_gait_params() : GaitParams();
+    GaitParams gp0 = quad ? quad_gait_params()
+                   : !std::strcmp(preset, "high") ? high_gait_params()
+                   : !std::strcmp(preset, "climb") ? climb_gait_params() : GaitParams();
     for (int i = 0; i < nsets; ++i) {
         char key[16];
         float v;
@@ -68,7 +73,7 @@ int main(int argc, char** argv) {
                  : !std::strcmp(key, "margin") ? &gp0.margin : !std::strcmp(key, "sway") ? &gp0.sway_speed
                  : !std::strcmp(key, "mid_lift") ? &gp0.mid_lift : !std::strcmp(key, "mid_reach") ? &gp0.mid_reach
                  : !std::strcmp(key, "max_period") ? &gp0.max_period_s : !std::strcmp(key, "com_x") ? &gp0.com_x
-                 : !std::strcmp(key, "com_y") ? &gp0.com_y : nullptr;
+                 : !std::strcmp(key, "com_y") ? &gp0.com_y : !std::strcmp(key, "height") ? &gp0.height : nullptr;
         if (!f) { std::fprintf(stderr, "--set %s: no such parameter\n", key); return 2; }
         *f = v;
     }
@@ -146,9 +151,11 @@ int main(int argc, char** argv) {
                         truth.yaw * 180 / M_PI, odom.x, odom.y, odom.yaw * 180 / M_PI, ratio * 100, odom_err,
                         stood_after, unreachable, clamped, min_margin * 1000);
     }
-    if (quad) {
-        // The switch on the robot: standing on the tripod's six, to the quadruped (middle feet up),
-        // a walk, and back to six; stable all along, and walking again on six.
+    const bool raised = gp0.height > 0;
+    if (quad || raised) {
+        // The switch on the robot: standing on the tripod's six, to the quadruped (middle feet up)
+        // or a raised body (the feet down, the body up), a walk, and back to six on the standard
+        // stand; stable all along, and walking again on six.
         SimRobot r;
         r.init(slip);
         r.set_com(com_x / 1000, com_y / 1000);
@@ -165,29 +172,39 @@ int main(int argc, char** argv) {
         };
         const bool took_quad = r.set_gait_params(gp0);
         const float t_up = tt;
-        for (int i = 0; i < 500 && !r.gait().mids_home(); ++i) run(dt, {0, 0, 0});
+        const Geometry& g = minihexa_geometry();
+        auto at_mode = [&](const GaitParams& p) {
+            return r.gait().mids_home() && r.gait().floor_z() == g.stand_z - p.height;
+        };
+        for (int i = 0; i < 500 && !at_mode(gp0); ++i) run(dt, {0, 0, 0});
         up_s = tt - t_up;
-        const bool mids_up = !r.foot_down(1) && !r.foot_down(4);
+        run(0.2f, {0, 0, 0});  // the servos catch up
+        int down_n = 0;
+        for (int leg = 0; leg < kLegs; ++leg) down_n += r.foot_down(leg);
+        const bool mids_up = quad ? !r.foot_down(1) && !r.foot_down(4) : down_n == kLegs && std::hypot(r.truth().x, r.truth().y) < 1e-4;  // no step while rising
         run(6, {0.02f, 0, 0});
         run(2 * gp0.max_period_s + 1, {0, 0, 0});
         const bool took_tripod = r.gait().standing() && r.set_gait_params(GaitParams());
         const float t_down = tt;
-        for (int i = 0; i < 500 && !r.gait().mids_home(); ++i) run(dt, {0, 0, 0});
+        for (int i = 0; i < 500 && !at_mode(GaitParams()); ++i) run(dt, {0, 0, 0});
         down_s = tt - t_down;
         run(0.2f, {0, 0, 0});
-        const bool six = r.foot_down(1) && r.foot_down(4);
+        bool six = true;
+        for (int leg = 0; leg < kLegs; ++leg) six = six && r.foot_down(leg);
         r.reset_poses();
         run(4, {0.04f, 0, 0});
         const bool walked = r.truth().x > 0.1;
         const bool ok = took_quad && mids_up && took_tripod && six && walked && un == 0 && cl == 0 && mm >= kMinMargin;
         if (!ok) ++failures;
-        std::printf("mode_switch  %s  tripod->quad %s (middle feet up in %.2f s%s), walk, quad->tripod %s (down in %.2f s%s), "
+        const char* to = quad ? "quad" : preset;
+        std::printf("mode_switch  %s  tripod->%s %s (%s in %.2f s%s), walk, %s->tripod %s (down in %.2f s%s), "
                     "tripod walk %.3f m  unreach %d  clamp %d  margin %.1f mm\n",
-                    ok ? "PASS" : "FAIL", took_quad ? "taken" : "REFUSED", up_s, mids_up ? "" : ", NOT UP",
-                    took_tripod ? "taken" : "REFUSED", down_s, six ? "" : ", NOT DOWN", r.truth().x, un, cl, mm * 1000);
+                    ok ? "PASS" : "FAIL", to, took_quad ? "taken" : "REFUSED", quad ? "middle feet up" : "body up", up_s,
+                    mids_up ? "" : ", NOT UP", to, took_tripod ? "taken" : "REFUSED", down_s, six ? "" : ", NOT DOWN",
+                    r.truth().x, un, cl, mm * 1000);
     }
     if (csv) std::fclose(csv);
     std::printf("%s: %d of %zu scenarios failed (%s, slip %.2f, com %+.0f,%+.0f mm)\n", failures ? "FAIL" : "PASS",
-                failures, sizeof(plan) / sizeof(plan[0]) + quad, quad ? "quadruped" : "tripod", slip, com_x, com_y);
+                failures, sizeof(plan) / sizeof(plan[0]) + (quad || raised), quad ? "quadruped" : preset, slip, com_x, com_y);
     return failures ? 1 : 0;
 }

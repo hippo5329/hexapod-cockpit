@@ -390,6 +390,67 @@ static void test_quad_switch_and_params() {
     TEST_ASSERT_TRUE(TripodGait::params_valid(quad_gait_params()));
 }
 
+// The high walk and the climb pose: the body rises while the gait stands (walking waits), the feet
+// stay reachable with no pulse clamped at top speed, a stop settles on the raised stance, and back to
+// the tripod the body comes down. The bounds tie the stride and the lift to the height.
+static void test_high_and_climb() {
+    const Geometry& g = minihexa_geometry();
+    TEST_ASSERT_TRUE(TripodGait::params_valid(high_gait_params()));
+    TEST_ASSERT_TRUE(TripodGait::params_valid(climb_gait_params()));
+    GaitParams bad = GaitParams();
+    bad.lift = 0.05f;  // above the belly at the standard stand
+    TEST_ASSERT_FALSE(TripodGait::params_valid(bad));
+    bad = high_gait_params();
+    bad.max_stride = 0.05f;  // out of reach with the body 20 mm up
+    TEST_ASSERT_FALSE(TripodGait::params_valid(bad));
+    bad = climb_gait_params();
+    bad.height = 0.05f;
+    TEST_ASSERT_FALSE(TripodGait::params_valid(bad));
+    for (const GaitParams& p : {high_gait_params(), climb_gait_params()}) {
+        TripodGait h;
+        h.init(&g, GaitParams());
+        TEST_ASSERT_TRUE(h.set_params(p));
+        const float want = g.stand_z - p.height;
+        float t = 0;
+        int ticks = 0;
+        for (; h.floor_z() != want && ticks < 500; ++ticks, t += kDt) {
+            h.command({0.05f, 0, 0}, t);
+            h.step(kDt, t);
+            TEST_ASSERT_TRUE(h.standing());  // rising first
+            for (int i = 0; i < kLegs; ++i) TEST_ASSERT_FLOAT_WITHIN(1e-6f, h.floor_z(), h.foot(i).z);
+        }
+        TEST_ASSERT_EQUAL_FLOAT(want, h.floor_z());
+        TEST_ASSERT_INT_WITHIN(2, static_cast<int>(p.height / kRiseSpeed / kDt), ticks);
+        float top = want;
+        for (const BodyTwist& ask : {BodyTwist{0.2f, 0, 0}, BodyTwist{0, 0.2f, 0}, BodyTwist{0.1f, 0.1f, 0.8f}}) {
+            for (int k = 0; k < static_cast<int>(3 * p.max_period_s / kDt); ++k, t += kDt) {
+                h.command(ask, t);
+                h.step(kDt, t);
+                for (int i = 0; i < kLegs; ++i) {
+                    LegAngles a;
+                    TEST_ASSERT_TRUE(leg_ik(g, i, h.foot(i), &a));
+                    const float ang[3] = {a.coxa, a.femur, a.tibia};
+                    for (int j = 0; j < 3; ++j) {
+                        bool cl = false;
+                        angle_to_us(default_cal(i * 3 + j), ang[j], &cl);
+                        TEST_ASSERT_FALSE(cl);
+                    }
+                    top = std::fmax(top, h.foot(i).z);
+                }
+            }
+        }
+        TEST_ASSERT_FALSE(h.standing());
+        TEST_ASSERT_FLOAT_WITHIN(0.002f, want + p.lift, top);  // the swing's peak
+        for (int k = 0; k < static_cast<int>(3 * p.max_period_s / kDt) && !h.standing(); ++k, t += kDt) h.step(kDt, t);
+        TEST_ASSERT_TRUE(h.standing());
+        for (int i = 0; i < kLegs; ++i) TEST_ASSERT_FLOAT_WITHIN(1e-6f, want, h.foot(i).z);
+        TEST_ASSERT_TRUE(h.set_params(GaitParams()));
+        for (int k = 0; k < 500 && h.floor_z() != g.stand_z; ++k, t += kDt) h.step(kDt, t);
+        TEST_ASSERT_EQUAL_FLOAT(g.stand_z, h.floor_z());
+        for (int i = 0; i < kLegs; ++i) TEST_ASSERT_FLOAT_WITHIN(1e-6f, g.stand_z, h.foot(i).z);
+    }
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_starts_standing);
@@ -405,5 +466,6 @@ int main() {
     RUN_TEST(test_quad_stable_and_reachable);
     RUN_TEST(test_quad_stop_settles);
     RUN_TEST(test_quad_switch_and_params);
+    RUN_TEST(test_high_and_climb);
     return UNITY_END();
 }

@@ -5,6 +5,8 @@
 - **Battery**: `/battery` (`sensor_msgs/BatteryState`), with its voltage coloured against 7.0 V (end the walk)
   and 6.8 V (the floor at rest), and a 5-minute chart.
 - **Sonar**: `/sonar` (`sensor_msgs/Range`), with its range, a bar to the sensor's max range and a 5-minute chart.
+- **Gait**: Tripod, High walk, Climb pose and Quadruped buttons, which send the mode on `/gait_params`; the
+  robot takes it when it next stands ([firmware.md](../docs/firmware.md#gait)).
 - **Camera**: the camera board's `/capture` snapshots, or its `:81/stream` MJPEG. The stream serves **one
   client**: while the tab holds it, `camera_bridge` and other readers cannot have it. Leaving the tab or
   pressing Stop releases it. A snapshot takes about 1 s over the board's Wi-Fi, so snapshots run at about 1/s

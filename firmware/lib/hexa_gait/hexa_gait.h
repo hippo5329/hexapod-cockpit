@@ -30,6 +30,10 @@ struct GaitParams {
     float period_s = 0.8f;      // one full cycle (both tripods step once): the fastest, see max_period_s
     float duty = 0.7f;          // fraction of the cycle a foot is on the ground
     float lift = 0.030f;        // swing height
+    // The body this far above the standard stand (Geometry::stand_z): every foot that much lower in the
+    // body frame. Changed while standing, the stance feet go down (the body up) or up at rise_speed
+    // first; walking waits for them. High walk and the climb pose (high_gait_params, climb_gait_params).
+    float height = 0.0f;
     float max_stride = 0.060f;  // longest stance travel of any foot
     float cmd_timeout_s = 0.5f; // a command older than this counts as zero
     // Adaptive cadence: period_s is the fastest cycle (top speed). Asked for less, the cycle slows,
@@ -49,6 +53,12 @@ struct GaitParams {
     // Unmeasured: the sim shows 10 mm unaccounted for costs about 5 mm of margin.
     float com_x = 0.0f, com_y = 0.0f;
 };
+
+// The high walk and the climb pose: see high_gait_params() and climb_gait_params() in hexa_gait.cpp.
+GaitParams high_gait_params();
+GaitParams climb_gait_params();
+// A body rising or lowering (GaitParams::height): m/s.
+constexpr float kRiseSpeed = 0.02f;
 
 // The quadruped crawl's defaults (sim/hexa_sim --quad, 2026-11-06): a 0.88 duty leaves 0.26 of the
 // cycle with four feet down after each side's two steps for the sway across (2 x margin / 0.79 of
@@ -124,6 +134,8 @@ public:
     float sway_y() const { return sway_y_; }
     // The middle feet at their place for the mode (up for quad, neutral for tripod).
     bool mids_home() const;
+    // The stance floor in the body frame now (it eases to stand_z - height while standing).
+    float floor_z() const { return z_; }
     bool in_stance(int leg) const;
     bool standing() const { return standing_; }
     // Stops that never settled and were put down by the backstop (step()): each one is a fault.
@@ -149,8 +161,10 @@ private:
     float offset(int leg) const;
     float start_phase() const;
     Vec3 home(int leg) const;  // neutral, or raised for a quad's middle leg
+    Vec3 neutral(int leg) const;  // neutral_foot() on the current floor
     void sway(float dt);
     BodyTwist clamp(const BodyTwist& c) const;
+    float reach_scale(const BodyTwist& c) const;
     float worst_foot_speed(const BodyTwist& c) const;
     bool settled() const;
 
@@ -169,6 +183,7 @@ private:
     bool was_stance_[kLegs];
     Vec3 foot_[kLegs];
     float sway_x_ = 0, sway_y_ = 0;
+    float z_ = -0.06f;  // floor_z()
     Vec3 swing_from_[kLegs];
     Vec3 landing_[kLegs];
 };

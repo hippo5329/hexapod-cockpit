@@ -172,10 +172,11 @@ void SimRobot::set_trims(const int16_t* by_servo_id) {
 }
 
 void SimRobot::actual_feet(Vec3* out, bool* contact) const {
+    // The floor where the gait stands (GaitParams::height raises the body: the floor is lower).
     for (int leg = 0; leg < kLegs; ++leg) {
         LegAngles a{servo_[leg * 3].angle(), servo_[leg * 3 + 1].angle(), servo_[leg * 3 + 2].angle()};
         out[leg] = from_posed_body(pose_applied_, leg_fk(*g_, leg, a));
-        contact[leg] = out[leg].z <= g_->stand_z + 0.003f;
+        contact[leg] = out[leg].z <= gait_.floor_z() + 0.003f;
     }
 }
 

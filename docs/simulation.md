@@ -13,7 +13,13 @@ make -C sim run                          # every scenario, exit 0 on PASS
 sim/hexa_sim --slip 0.10 --csv walk.csv  # another slip, a trace per tick
 sim/hexa_sim --quad                      # the quadruped crawl (below)
 sim/hexa_sim --quad --com -10,0 --set margin=0.015   # centre of mass 10 mm back; a gait override
+sim/hexa_sim --high                      # the high walk; --climb the climb pose; --set height=0.03 any height
 ```
+
+`sim/tools/high_walk_sim.cpp` sweeps body height, lift and stride for reach. At each setting it walks at top
+speed in eight directions, then runs 120 s of commands changing every 0.2-1 s. It counts every tick with a foot
+out of reach or a pulse clamped, and reports the least margin to any servo's range. That sweep set the gait's
+height bounds and the high walk and climb presets ([firmware.md](firmware.md#gait)).
 
 Each 20 ms tick follows the same path as the firmware:
 1. The gait gives foot targets.

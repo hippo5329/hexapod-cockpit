@@ -90,6 +90,35 @@ GaitParams quad_gait_params() {
     return p;
 }
 
+// The high walk (sim/tools/high_walk_sim.cpp, 2026-11-08: over cables and pipes, user): the body 20 mm up
+// (belly 65 mm off the floor, was 45) and the swing 50 mm high, so a cable or a pipe up to about 45 mm
+// passes under the feet and the body; the stride 45 mm (65 less the height), a 1.0 s cycle for the
+// longer swing. Top speed 64 mm/s; every servo 260 us or more inside its range.
+GaitParams high_gait_params() {
+    GaitParams p;
+    p.period_s = 1.0f;
+    p.height = 0.020f;
+    p.lift = 0.050f;
+    p.max_stride = 0.045f;
+    return p;
+}
+
+// The climb pose: the highest body the legs still walk with (40 mm up: belly 85 mm off the floor) and
+// the highest swing under it (80 mm), for stepping onto something: a foot reaches 80 mm above the
+// floor. The stride is 25 mm (the legs nearly straight), a slow 2.0 s cycle, longer on the ground
+// (duty 0.75); top speed 17 mm/s. The gait does not feel the step: a foot landing on it is a foot
+// landing high, which tilts the body until it steps off again.
+GaitParams climb_gait_params() {
+    GaitParams p;
+    p.period_s = 2.0f;
+    p.max_period_s = 4.0f;
+    p.duty = 0.75f;
+    p.height = 0.040f;
+    p.lift = 0.080f;
+    p.max_stride = 0.025f;
+    return p;
+}
+
 // The tripod from phase 0; the quadruped from the gap after rf's step (0.5 + 2 (1 - duty)).
 float TripodGait::start_phase() const { return p_.quad ? frac(2.5f - 2 * p_.duty) : 0.0f; }
 
@@ -106,11 +135,16 @@ float TripodGait::offset(int leg) const {
     }
 }
 
+Vec3 TripodGait::neutral(int leg) const {
+    const Vec3 n = neutral_foot(*g_, leg);
+    return {n.x, n.y, z_};
+}
+
 Vec3 TripodGait::home(int leg) const {
-    if (walks(leg)) return neutral_foot(*g_, leg);
+    if (walks(leg)) return neutral(leg);
     const Hip& h = g_->hip[leg];
     return {h.x + p_.mid_reach * std::cos(h.mount_yaw), h.y + p_.mid_reach * std::sin(h.mount_yaw),
-            g_->stand_z + p_.mid_lift};
+            z_ + p_.mid_lift};
 }
 
 bool TripodGait::mids_home() const {
@@ -181,6 +215,7 @@ void TripodGait::init(const Geometry* g, const GaitParams& p) {
     g_ = g;
     p_ = p;
     raw_ = cmd_ = {0, 0, 0};
+    z_ = g->stand_z - p.height;
     period_ = p.period_s;
     cmd_time_ = -1e9f;
     phase_ = start_phase();
@@ -199,7 +234,7 @@ float TripodGait::worst_foot_speed(const BodyTwist& c) const {
     for (int i = 0; i < kLegs; ++i) {
         if (!walks(i)) continue;
         float vx, vy;
-        stance_vel(c, neutral_foot(*g_, i), &vx, &vy);
+        stance_vel(c, neutral(i), &vx, &vy);
         worst = std::fmax(worst, std::sqrt(vx * vx + vy * vy));
     }
     return worst;
@@ -210,6 +245,33 @@ BodyTwist TripodGait::clamp(const BodyTwist& c) const {
     if (worst <= p_.max_stride) return c;
     const float k = p_.max_stride / worst;
     return {c.vx * k, c.vy * k, c.wz * k};
+}
+
+// The share of c (0..1) that keeps every stance foot within a stride of its neutral spot at its
+// lift-off. A command that changes mid-stance moves a foot on from where the last one left it: a
+// reversal carried a foot landed half a stride ahead a full stride further, 1.5 strides out, past
+// the reach of a raised body (sim/tools/high_walk_sim.cpp). A stride out is what a start from
+// standing takes (its first stance begins on neutral), so a steady walk is never slowed. Only the
+// end is checked: the path there is a straight line, and the disc is convex.
+float TripodGait::reach_scale(const BodyTwist& c) const {
+    const float r2 = p_.max_stride * p_.max_stride * 1.0001f;
+    float k = 1.0f;
+    for (int i = 0; i < kLegs; ++i) {
+        if (!in_stance(i)) continue;
+        const float tau = (p_.duty - leg_phase(i)) * period_;  // to lift-off
+        float vx, vy;
+        stance_vel(c, foot_[i], &vx, &vy);
+        const Vec3 n = neutral(i);
+        const float dx = foot_[i].x - n.x, dy = foot_[i].y - n.y, wx = vx * tau, wy = vy * tau;
+        const float a = wx * wx + wy * wy, b = 2 * (dx * wx + dy * wy), cc = dx * dx + dy * dy - r2;
+        if (a < 1e-12f) continue;
+        if (cc > 0) {  // already out (it should not be): only inward
+            if (b >= 0) k = 0;
+            continue;
+        }
+        k = std::fmin(k, (-b + std::sqrt(b * b - 4 * a * cc)) / (2 * a));  // the root past zero
+    }
+    return std::fmax(0.0f, k);
 }
 
 void TripodGait::command(const BodyTwist& cmd, float now_s) {
@@ -231,7 +293,10 @@ bool TripodGait::params_valid(const GaitParams& p) {
     // Duty above 0.5 overlaps the tripods' stances (both down at each change); at or below
     // 0.5 there is an instant with three feet or fewer. The quadruped needs more than 0.75: its
     // sway across waits for the four-feet gap, 0.5 - 2 (1 - duty) of the cycle. The rest bound
-    // what the legs reach.
+    // what the legs reach: a raised body (height) leaves less leg for the stride (65 mm less the
+    // height) and room for a higher swing (40 mm plus the height, the peak under the belly), every
+    // corner of these walked clean in sim/tools/high_walk_sim.cpp (top speed each way, then 120 s of
+    // commands changing every 0.2-1 s: a stance foot carries on from where the last one left it).
     const bool duty_ok = p.quad ? p.duty >= 0.76f && p.duty <= 0.9f : p.duty >= 0.5f && p.duty <= 0.8f;
     const bool quad_ok = !p.quad || (p.mid_lift >= 0.01f && p.mid_lift <= 0.045f && p.mid_reach >= 0.04f &&
                                      p.mid_reach <= 0.0701f && p.margin >= 0.0f && p.margin <= 0.03f &&
@@ -239,7 +304,8 @@ bool TripodGait::params_valid(const GaitParams& p) {
                                      p.mid_speed <= 0.1f && std::fabs(p.com_x) <= 0.03f &&
                                      std::fabs(p.com_y) <= 0.03f);
     return duty_ok && quad_ok && p.period_s >= 0.5f && p.period_s <= 3.0f && p.lift >= 0.01f &&
-           p.lift <= 0.04f && p.max_stride >= 0.01f && p.max_stride <= 0.06f && p.cmd_timeout_s > 0.0f &&
+           p.height >= 0.0f && p.height <= 0.04f && p.lift <= std::fmin(0.08f, 0.04f + p.height + 1e-6f) &&
+           p.max_stride >= 0.01f && p.max_stride <= std::fmin(0.06f, 0.065f - p.height + 1e-6f) && p.cmd_timeout_s > 0.0f &&
            p.max_period_s >= p.period_s && p.max_period_s <= 4.0f && p.min_foot_speed >= 0.0f &&
            p.min_foot_speed <= 0.01f;
 }
@@ -259,7 +325,7 @@ bool TripodGait::settled() const {
     if (std::fabs(sway_x_) > kSettleEps || std::fabs(sway_y_) > kSettleEps || !mids_home()) return false;
     for (int i = 0; i < kLegs; ++i) {
         if (!walks(i)) continue;
-        const Vec3 n = neutral_foot(*g_, i);
+        const Vec3 n = neutral(i);
         if (std::fabs(foot_[i].x - n.x) > kSettleEps || std::fabs(foot_[i].y - n.y) > kSettleEps ||
             std::fabs(foot_[i].z - n.z) > kSettleEps)
             return false;
@@ -274,9 +340,16 @@ BodyTwist TripodGait::applied() const {
 
 void TripodGait::step(float dt, float now_s) {
     if (now_s - cmd_time_ > p_.cmd_timeout_s) raw_ = {0, 0, 0};
-    if (standing_ && !mids_home()) {
-        // A new mode while standing: the middle feet go up (quad) or down (tripod) first, in a
-        // straight line at mid_speed; walking waits for them.
+    const float want_z = g_->stand_z - p_.height;
+    if (standing_ && (z_ != want_z || !mids_home())) {
+        // A new height while standing: every walking foot (all down, on neutral) straight up or down
+        // at kRiseSpeed, the body the other way.
+        const float dz = want_z - z_, st = kRiseSpeed * dt;
+        z_ = std::fabs(dz) <= st ? want_z : z_ + (dz > 0 ? st : -st);
+        for (int i = 0; i < kLegs; ++i)
+            if (walks(i)) foot_[i].z = z_;
+        // A new mode while standing: the middle feet go up (quad) or down (tripod), in a
+        // straight line at mid_speed (onto the moving floor); walking waits for them.
         for (int leg : {1, 4}) {
             const Vec3 h = home(leg);
             const float dx = h.x - foot_[leg].x, dy = h.y - foot_[leg].y, dz = h.z - foot_[leg].z;
@@ -297,7 +370,9 @@ void TripodGait::step(float dt, float now_s) {
         period_ += (want - period_) * std::fmin(1.0f, dt / period_);
     }
     cmd_ = clamp(eff);
-    odom_ = {cmd_.vx, cmd_.vy, clamp(raw_).wz};
+    const float reach = standing_ ? 1.0f : reach_scale(cmd_);
+    cmd_ = {cmd_.vx * reach, cmd_.vy * reach, cmd_.wz * reach};
+    odom_ = {cmd_.vx, cmd_.vy, clamp(raw_).wz * reach};
     const bool moving = std::fabs(cmd_.vx) > kZeroCmd || std::fabs(cmd_.vy) > kZeroCmd ||
                         std::fabs(cmd_.wz) > kZeroCmd;
     if (!moving && settled()) {
@@ -315,7 +390,7 @@ void TripodGait::step(float dt, float now_s) {
         // sways back to the centre there before it stands (stepping on would need the sway).
         bool down = true;
         for (int leg : kCorners) {
-            const Vec3 n = neutral_foot(*g_, leg);
+            const Vec3 n = neutral(leg);
             down = down && was_stance_[leg] && std::fabs(foot_[leg].x - n.x) <= kSettleEps &&
                    std::fabs(foot_[leg].y - n.y) <= kSettleEps;
         }
@@ -327,7 +402,7 @@ void TripodGait::step(float dt, float now_s) {
                 for (int i = 0; i < kLegs; ++i) was_stance_[i] = walks(i);
                 sway_x_ = sway_y_ = 0;
             }
-            for (int leg : kCorners) foot_[leg].z = g_->stand_z;
+            for (int leg : kCorners) foot_[leg].z = z_;
             const float d = std::sqrt(sway_x_ * sway_x_ + sway_y_ * sway_y_), st = p_.sway_speed * dt;
             if (d <= st) {
                 sway_x_ = sway_y_ = 0;
@@ -351,7 +426,7 @@ void TripodGait::step(float dt, float now_s) {
             const bool stance_next = frac(next + kOffset[i]) < p_.duty;
             if (!stance_next && !was_stance_[i]) down = false;  // mid-swing
             const Vec3& p = stance_next && !was_stance_[i] ? landing_[i] : foot_[i];
-            const Vec3 n = neutral_foot(*g_, i);
+            const Vec3 n = neutral(i);
             down = down && std::fabs(p.x - n.x) <= kSettleEps && std::fabs(p.y - n.y) <= kSettleEps &&
                    (was_stance_[i] || stance_next);
         }
@@ -361,7 +436,7 @@ void TripodGait::step(float dt, float now_s) {
         if (down || idle_s_ > 2 * period_) {
             if (!down) ++forced_stands_;
             for (int i = 0; i < kLegs; ++i) {
-                foot_[i] = neutral_foot(*g_, i);
+                foot_[i] = neutral(i);
                 landing_[i] = swing_from_[i] = foot_[i];
             }
             phase_ = next;
@@ -391,21 +466,21 @@ void TripodGait::step(float dt, float now_s) {
             stance_vel(cmd_, foot_[i], &vx, &vy);
             foot_[i].x += vx * dt;
             foot_[i].y += vy * dt;
-            foot_[i].z = g_->stand_z;
+            foot_[i].z = z_;
         } else {
             if (was_stance_[i]) swing_from_[i] = foot_[i];  // lift-off
             const float s = (leg_phase(i) - p_.duty) / (1.0f - p_.duty);  // 0..1
             // Land ahead of neutral by half a stance of travel, so the stance is centred.
-            const Vec3 n = neutral_foot(*g_, i);
+            const Vec3 n = neutral(i);
             float vx, vy;
             stance_vel(cmd_, n, &vx, &vy);
             const float lx = n.x - vx * 0.5f * t_stance;
             const float ly = n.y - vy * 0.5f * t_stance;
-            landing_[i] = {lx, ly, g_->stand_z};
+            landing_[i] = {lx, ly, z_};
             const float e = 0.5f - 0.5f * std::cos(static_cast<float>(M_PI) * s);  // ease in/out
             foot_[i].x = swing_from_[i].x + (lx - swing_from_[i].x) * e;
             foot_[i].y = swing_from_[i].y + (ly - swing_from_[i].y) * e;
-            foot_[i].z = g_->stand_z + p_.lift * std::sin(static_cast<float>(M_PI) * s);
+            foot_[i].z = z_ + p_.lift * std::sin(static_cast<float>(M_PI) * s);
         }
         was_stance_[i] = stance;
     }
