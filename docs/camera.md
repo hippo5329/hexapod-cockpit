@@ -96,3 +96,33 @@ obstacle ahead agreed with the sonar within 2-5 cm under 0.7 m (0.513/0.508, 0.4
 tilt is 0.5 m. The colour of the floor alone cannot separate it from white doors (Lab within 4), hence
 the depth. The class names are COCO's: white closet doors come out as "refrigerator", furniture as
 "chair", "bed" or "oven"; the obstacles do not depend on them.
+
+## Object survey while exploring (`object_survey`)
+
+`ros2 run hexapod_bringup object_survey --ros-args -p note_prefix:=<path> [-p rooms_file:=<rooms.json> -p home_pose:=x,y,yaw_deg]`
+
+The camera sees about 58 degrees, straight ahead, and while exploring it mostly sees what the frontiers point at.
+So every 1.5 m of travel, and once after the start, the survey looks around:
+
+1. It pauses the explorer: `explore/resume` false cancels its goal.
+2. It turns a full circle in eight 45-degree steps with Nav2's Spin behaviour, which checks the costmap for room to turn.
+3. At each heading it stands still for 2 s while `camera_vision` labels the frame.
+4. It resumes the explorer, facing the way it was going.
+
+Labels seen while walking count too. Each sighting goes on the map through TF at the frame's stamp. It merges with
+the nearest object of the same label within 0.5 m, or 0.9 m for furniture. An object is confirmed after:
+- two views (surveys or walking), or
+- three frames, or
+- one sighting with a score of 0.7 or more.
+
+After every survey and at the end, the survey rewrites its note:
+- `<note_prefix>.md`: the confirmed objects with their room and map position, then the objects room by room, then
+  each survey.
+- `<note_prefix>.json`: every object, confirmed or not, and the surveys.
+- `<note_prefix>.png`: the map with the rooms, the objects and the path walked.
+- `<note_prefix>_img/`: the labelled frame of each object's best sighting.
+- `objects/markers`: for RViz.
+
+Rooms are polygons in the **home frame**: home's position is the origin and its heading is +x. A map made fresh
+at home each run keeps the rooms where they are. `home_pose` places home on the run's map. A TERM stops the
+survey: it cancels a turn under way and writes the note. The labels are COCO's, with COCO's mistakes (above).
