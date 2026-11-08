@@ -212,14 +212,14 @@ static void test_yaw_hold_holds_heading_and_turn_rate() {
     TEST_ASSERT_FLOAT_WITHIN(0.03f, 0.0f, held);
     TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0f, odom);  // odometry: no turn, as commanded
     // A turn below the gait's top rate (0.3 rad/s was at the stride limit of the old 1.5 s cycle: there
-    // the trim had no room, and the robot's 0.3 turns made 0.19; 0.8 s tops out at 0.8 rad/s).
+    // the trim had no room, and the robot's 0.3 turns made 0.19; 0.5 s tops out at 1.3 rad/s).
     const float open = walk_with_slip({0, 0, 0.15f}, 10, false, &odom);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 0.6f * 1.5f - 0.12f, open);  // ~52 % of the turn
     const float closed = walk_with_slip({0, 0, 0.15f}, 10, true, &odom);
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 1.5f, closed);  // the commanded 1.5 rad, less the first second's lag
     TEST_ASSERT_FLOAT_WITHIN(0.005f, 0.15f, odom);
     // At the limit the trim cannot add: the gait's command stays clamped, odometry on the clamped rate.
-    walk_with_slip({0, 0, 1.0f}, 5, true, &odom);
+    walk_with_slip({0, 0, 2.0f}, 5, true, &odom);  // past the 0.5 s cycle's 1.3 rad/s
     TEST_ASSERT_FLOAT_WITHIN(1e-3f, gait.target().wz, odom);
 }
 
