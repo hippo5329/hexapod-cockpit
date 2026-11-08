@@ -32,7 +32,7 @@ import tempfile
 
 NVS_SIZE = 0x5000
 KEYS = {"ssid", "psk", "ota_pw", "name", "frame", "quality", "fps", "vflip", "hmirror", "syslog_ip", "syslog_port",
-        "xclk", "tx_dbm", "lidar_rx", "lidar_ip", "lidar_port", "lidar_baud"}
+        "xclk", "tx_dbm", "lidar_rx", "lidar_ip", "lidar_port", "lidar_baud", "boot_capture"}
 FRAMES = {"qqvga", "qvga", "vga", "svga", "xga", "hd"}
 
 

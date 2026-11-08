@@ -13,6 +13,8 @@
 //   POST http://<ip>/wifi    ssid=..&psk=..[&syslog_ip=..]: another network, on trial (60 s, else back)
 //   /control?tx=2-20         Wi-Fi transmit power in dBm, kept (cheap boards lose frames at 20)
 //   /control?wbuf=1|0        Wi-Fi and lwIP buffers in internal RAM (1, default) or PSRAM (0), kept, reboots
+//   /control?boot_capture=0|1  0: the camera driver is not started at boot (no sensor clock, no DMA; a Wi-Fi
+//                            test without the runtime capture=0), kept, reboots
 //   /control?ps=0|1|2|kick   Wi-Fi power save now (not kept): 0 none (the boot's), 1 min modem, 2 max modem;
 //                            kick: 1 then 0, so the AP hears the station is awake (see ps_kick); /status reset:
 //                            why the board last restarted (esp_reset_reason)
@@ -53,6 +55,7 @@ int quality = 12, fps = 10;
 bool vflip = false, hmirror = false;
 const char* sensor_name = "none";
 bool cam_ok = false, net_started = false;
+bool boot_capture = true;  // NVS boot_capture "0": the camera is not started at boot
 int xclk_mhz = 20;
 // Wi-Fi transmit power, dBm (2-20). Cheap S3 boards cannot hold the default 20 dBm bursts: frames and
 // acks are lost, the AP retries and falls to its slowest rate (pings of seconds, 2026-11-06).
@@ -148,6 +151,7 @@ void load_settings() {
     tx_dbm = constrain(prefs.getString("tx_dbm", "20").toFloat(), 2.0f, 20.0f);
     wifi_mem::internal_first = prefs.getString("wbuf", "1") != "0";
     uart_mode = prefs.getString("uart", "echo");
+    boot_capture = prefs.getString("boot_capture", "1") != "0";
     if (uart_mode != "echo" && uart_mode != "off") uart_mode = "echo";
     lidar_rx = prefs.getString("lidar_rx", "-1").toInt();
     if (!lidar_ip.fromString(prefs.getString("lidar_ip", ""))) lidar_ip = IPAddress(0, 0, 0, 0);
@@ -343,7 +347,7 @@ esp_err_t control_handler(httpd_req_t* req) {
     bool* const flags[] = {&vflip, &hmirror};
     char q[192], v[2][2] = {}, fv[8] = {};
     bool given[2] = {}, frame_given = false;
-    int new_fps = 0, new_xclk = 0, capture = -1, new_wbuf = -1, new_ps = -1;  // new_ps 3: kick
+    int new_fps = 0, new_xclk = 0, capture = -1, new_wbuf = -1, new_ps = -1, new_bootcap = -1;  // new_ps 3: kick
     float new_tx = 0;
     const Frame* new_frame = nullptr;
     if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
@@ -418,6 +422,13 @@ esp_err_t control_handler(httpd_req_t* req) {
             }
             capture = f[0] == '1';
         }
+        if (httpd_query_key_value(q, "boot_capture", f, sizeof f) == ESP_OK) {
+            if (strcmp(f, "0") && strcmp(f, "1")) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "boot_capture takes 0 or 1");
+                return ESP_FAIL;
+            }
+            new_bootcap = f[0] == '1';
+        }
         if (httpd_query_key_value(q, "ps", f, sizeof f) == ESP_OK) {
             if (!strcmp(f, "kick")) new_ps = 3;
             else if (!strcmp(f, "0") || !strcmp(f, "1") || !strcmp(f, "2")) new_ps = f[0] - '0';
@@ -443,9 +454,11 @@ esp_err_t control_handler(httpd_req_t* req) {
             }
         }
     }
-    if (!given[0] && !given[1] && !frame_given && !new_fps && !new_xclk && capture < 0 && !new_tx && new_wbuf < 0) {
+    if (!given[0] && !given[1] && !frame_given && !new_fps && !new_xclk && capture < 0 && !new_tx && new_wbuf < 0 &&
+        new_ps < 0 && new_bootcap < 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                             "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&tx=2-20&xclk=5-24&capture=0|1&wbuf=0|1&frame=<size>"
+                            "&ps=0|1|2|kick&boot_capture=0|1"
                             " or lidar_rx=..&lidar_ip=..&lidar_port=..&lidar_baud=..");
         return ESP_FAIL;
     }
@@ -464,6 +477,7 @@ esp_err_t control_handler(httpd_req_t* req) {
     }
     if (new_xclk) w.putString("xclk", String(new_xclk));
     if (new_wbuf >= 0) w.putString("wbuf", new_wbuf ? "1" : "0");
+    if (new_bootcap >= 0) w.putString("boot_capture", new_bootcap ? "1" : "0");
     if (new_tx) {
         tx_dbm = new_tx;
         w.putString("tx_dbm", String(new_tx, 2));
@@ -488,7 +502,9 @@ esp_err_t control_handler(httpd_req_t* req) {
     }
     // the Wi-Fi buffers are taken at driver init: a new place needs a boot
     const bool rewbuf = new_wbuf >= 0 && (new_wbuf == 1) != wifi_mem::internal_first;
-    const bool reboot = (new_frame && new_frame->size != frame) || rewbuf;
+    const bool rebootcap = new_bootcap >= 0 && (new_bootcap == 1) != boot_capture;
+    if (rebootcap) boot_capture = new_bootcap == 1;
+    const bool reboot = (new_frame && new_frame->size != frame) || rewbuf || rebootcap;
     hexa_log::log(hexa_log::kNotice, "control: vflip %d hmirror %d fps %d tx %.1f dBm xclk %d MHz capture %s frame %s wbuf %s (kept)%s",
                   vflip, hmirror, fps, tx_dbm, xclk_mhz, cam_ok ? "on" : "off",
                   new_frame ? new_frame->name : frame_name(frame),
@@ -634,6 +650,10 @@ void http_begin() {
     httpd_config_t c = HTTPD_DEFAULT_CONFIG();
     c.server_port = 80;
     c.ctrl_port = 32768;
+    // /control answers with status_handler's JSON (1.3 KB buffer + snprintf's float formatting) on top of its own
+    // frame: the default 4 KB overflowed (stack canary in dtoa under control_handler, every /control call
+    // rebooted the board, 2026-11-08).
+    c.stack_size = 8192;
     httpd_handle_t ctl = nullptr;
     if (httpd_start(&ctl, &c) == ESP_OK) {
         httpd_uri_t st = {"/status", HTTP_GET, status_handler, nullptr};
@@ -665,7 +685,8 @@ void setup() {
     Serial.begin(115200);
     load_settings();
     hexa_log::begin(prefs, !ssid.isEmpty(), true, name.c_str(), "camera");
-    cam_ok = camera_begin();
+    if (boot_capture) cam_ok = camera_begin();
+    else paused = true;
     uart_begin();  // before Wi-Fi: the robot's link does not wait for a network
     if (ssid.isEmpty()) {
         hexa_log::log(hexa_log::kErr, "no ssid in NVS (hexacam): nothing to join (tools/make_cam_nvs.py)");
