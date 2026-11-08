@@ -18,6 +18,8 @@ robot:
 base_controller:
   name: minihexa
   mcu: esp32
+  sonar:
+    i2c_address: 0x77  # Hiwonder's I2C ultrasonic: the collision monitor's sonar source needs it declared
   lidar:
     model: ld19
     comm_mode: udp
@@ -331,11 +333,22 @@ nav2:
         enabled: true
       observation_sources:
       - scan
+      - sonar
       scan:
         type: scan
         topic: scan
         min_height: 0.15
         max_height: 2.0
+        enabled: true
+      sonar:
+        # The front ultrasonic: what is near ahead below the LiDAR's plane slows and stops the robot; it is no
+        # costmap layer. Its beam is ~30 deg (the message says 15): an echo off a chair 10-15 deg aside read
+        # 1.42 m with the LiDAR clear to 2.72 m ahead, and the RangeSensorLayer marked every such echo as an
+        # arc across the cone, never cleared, until turning in place stacked them into rings and Nav2 refused
+        # the survey's turns (2026-11-08).
+        type: range
+        topic: sonar
+        obstacles_angle: 0.0349  # 2 deg between the arc's points
         enabled: true
   docking_server:
     ros__parameters:
@@ -386,7 +399,6 @@ nav2:
         plugins:
         - voxel_layer
         - camera_layer
-        - sonar_layer
         - inflation_layer
         camera_layer:
           # camera_vision's camera/obstacle_scan: what stands over 4.5 cm off the floor ahead, below the LiDAR's
@@ -406,13 +418,6 @@ nav2:
             raytrace_max_range: 1.0
             raytrace_min_range: 0.30
             expected_update_rate: 0.0
-        sonar_layer:
-          # The front ultrasonic (/sonar, 15 deg): low things ahead the LiDAR misses.
-          plugin: nav2_costmap_2d::RangeSensorLayer
-          enabled: true
-          topics: ["/sonar"]
-          clear_on_max_reading: true
-          input_sensor_type: VARIABLE  # a ranging sonar (FIXED is an on/off proximity switch)
         inflation_layer:
           plugin: nav2_costmap_2d::InflationLayer
           # 10, not 3: in a 0.8 m doorway the cost at its middle was half lethal and MPPI crawled at ~0.01 m/s
@@ -457,10 +462,9 @@ nav2:
         # No camera_layer here: monocular depth is for what is near (a slipper ahead); its far-floor
         # errors in the global costmap fenced off every frontier after a look-around (2026-11-08). The
         # local costmap carries it; the LiDAR builds this one.
-        # No sonar_layer here: a RangeSensorLayer that cannot transform into `map` (Nav2 up before SLAM)
-        # blocks the update for transform_tolerance on every reading; at 10 Hz the backlog never drains
-        # and the costmap stops publishing (explore waited on it, 2026-11-08). The sonar is near-field:
-        # the local costmap (odom) carries it.
+        # No sonar layer in either costmap: the collision monitor takes the sonar (its comment). Here a
+        # RangeSensorLayer that could not transform into `map` (Nav2 up before SLAM) also blocked the update
+        # for transform_tolerance on every reading, and the costmap stopped publishing (2026-11-08).
         - inflation_layer
         obstacle_layer:
           plugin: nav2_costmap_2d::ObstacleLayer
