@@ -100,7 +100,7 @@ nav2:
       controller_frequency: 10.0
       costmap_update_timeout: 0.3
       min_x_velocity_threshold: 0.001
-      min_y_velocity_threshold: 0.5
+      min_y_velocity_threshold: 0.001
       min_theta_velocity_threshold: 0.001
       failure_tolerance: 0.3
       progress_checker_plugins:
@@ -121,25 +121,88 @@ nav2:
         xy_goal_tolerance: 0.15
         yaw_goal_tolerance: 0.25
       FollowPath:
-        plugin: nav2_rotation_shim_controller::RotationShimController
+        # The hexapod walks in any direction: MPPI with the Omni model (vx, vy, wz), so it can back off and side-step
+        # a wall instead of turning in place on the spot (the rotation shim + pure pursuit, a diff-drive pair, stood
+        # at walls: the collision monitor scaled the in-place turn to nothing and reversing was off).
+        plugin: nav2_mppi_controller::MPPIController
+        motion_model: Omni
+        # 2.5 s of horizon (10 cm at 0.04 m/s), noise 0.03 and the goal critics only in the last 0.2 m: with 4 s,
+        # 0.02 and 0.5 m it drove 12 cm goals at 0.011-0.013 m/s (a full-speed rollout overshot the goal).
+        time_steps: 25
+        model_dt: 0.1
+        batch_size: 1000
+        iteration_count: 1
+        vx_std: 0.03
+        vy_std: 0.03
+        wz_std: 0.3
+        vx_max: 0.04
+        vx_min: -0.04
+        vy_max: 0.04
+        wz_max: 0.3
+        ax_max: 0.1
+        ax_min: -0.1
+        ay_max: 0.1
+        az_max: 0.6
+        # Scaled to the robot: gamma / std^2 is the control cost's weight, 0.015 / 0.03^2 = 17 (44x the reference's
+        # 0.015 / 0.2^2) held every command near zero (0.011-0.020 m/s, |vy| <= 0.006); 0.0005 / 0.03^2 = 0.56. Rollouts
+        # 2.5 s long end centimetres apart, so the critics' costs differ by tenths: temperature 0.05, not 0.3.
+        temperature: 0.05
+        gamma: 0.0005
+        prune_distance: 1.0
         transform_tolerance: 0.3
-        primary_controller: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
-        angular_dist_threshold: 0.785
-        angular_disengage_threshold: 0.3925
-        forward_sampling_distance: 0.5
-        rotate_to_heading_angular_vel: 0.3
-        max_angular_accel: 0.6
-        simulate_ahead_time: 1.0
-        rotate_to_goal_heading: false
-        rotate_to_heading_once: true
-        use_path_orientations: false
-        desired_linear_vel: 0.035
-        lookahead_dist: 0.25
-        min_lookahead_dist: 0.15
-        max_lookahead_dist: 0.4
-        use_fixed_curvature_lookahead: true
-        curvature_lookahead_dist: 0.6
-        interpolate_curvature_after_goal: true
+        enforce_path_inversion: false
+        regenerate_noises: true
+        visualize: false
+        critics:
+        - ConstraintCritic
+        - CostCritic
+        - GoalCritic
+        - GoalAngleCritic
+        - PathAlignCritic
+        - PathFollowCritic
+        - TwirlingCritic
+        ConstraintCritic:
+          enabled: true
+          cost_power: 1
+          cost_weight: 4.0
+        CostCritic:
+          enabled: true
+          cost_power: 1
+          cost_weight: 3.81
+          critical_cost: 300.0
+          consider_footprint: false
+          collision_cost: 1000000.0
+          near_goal_distance: 0.5
+          trajectory_point_step: 2
+        GoalCritic:
+          enabled: true
+          cost_power: 1
+          cost_weight: 5.0
+          threshold_to_consider: 0.2
+        GoalAngleCritic:
+          enabled: true
+          cost_power: 1
+          cost_weight: 3.0
+          threshold_to_consider: 0.2
+        PathAlignCritic:
+          enabled: true
+          cost_power: 1
+          cost_weight: 14.0
+          max_path_occupancy_ratio: 0.05
+          trajectory_point_step: 4
+          threshold_to_consider: 0.2
+          offset_from_furthest: 20
+          use_path_orientations: false
+        PathFollowCritic:
+          enabled: true
+          cost_power: 1
+          cost_weight: 5.0
+          offset_from_furthest: 5
+          threshold_to_consider: 0.2
+        TwirlingCritic:
+          enabled: true
+          cost_power: 1
+          cost_weight: 10.0
   planner_server:
     ros__parameters:
       expected_planner_frequency: 20.0
@@ -197,19 +260,19 @@ nav2:
       feedback: OPEN_LOOP
       max_velocity:
       - 0.04
-      - 0.0
+      - 0.04
       - 0.35
       min_velocity:
       - -0.04
-      - 0.0
+      - -0.04
       - -0.35
       max_accel:
       - 0.1
-      - 0.0
+      - 0.1
       - 0.6
       max_decel:
       - -0.1
-      - 0.0
+      - -0.1
       - -0.8
       odom_topic: odom
       odom_duration: 0.1
