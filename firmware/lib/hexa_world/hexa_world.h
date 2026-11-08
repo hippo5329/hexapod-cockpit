@@ -50,8 +50,9 @@ struct StepCounts {
 // Rest: the idle mode. The servo controller has no "servos off" (its protocol only sets
 // pulses, and it holds the last ones), so the robot saves power by lying down: with the gait
 // standing, the body lowers onto its belly (12-15 mm under the hip axis, measured) and the
-// feet come up off the floor, so the servos hold only the legs. Feet 10 mm under the hip
-// axis, 75 mm out: every femur pulse, trims included, stays >= 38 us inside its clamp.
+// feet come down beside it, 75 mm out from each hip and 15 mm under the hip axis: on the floor
+// with the belly, so the robot lies on its belly and six feet (steadier than on the belly
+// alone with the feet held up, user 2026-11-08), the servos still holding only the legs.
 // Body pose: the body shifted (x forward, y left, z up, m) and turned (roll, pitch, yaw, rad: yaw
 // about z, then pitch about y, then roll about x) over feet that stay where the gait puts them,
 // standing or walking. Every foot target goes through the inverse before the IK. Asked-for poses
@@ -117,7 +118,7 @@ private:
 
 struct RestParams {
     float reach = 0.075f;  // hip-to-foot, horizontal
-    float z = -0.010f;     // foot height in the body frame (stand_z -0.060)
+    float z = -0.015f;     // foot height in the body frame (stand_z -0.060): the floor under the belly
     float time_s = 3.0f;   // down, and up again
 };
 

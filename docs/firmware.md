@@ -189,8 +189,9 @@ sway and the centre of mass; the `health` line says `(quad)`.
 **Idle.** The servo controller has no "servos off": its protocol only sets pulses, and it holds the last ones,
 so the servos are never unpowered while the board is on. To save power the robot lies down instead: after
 `idle_s` seconds (default 30, also from boot) without a `/cmd_vel` that moves, and once the gait stands, the
-body lowers onto its belly over 3 s (feet 75 mm out from each hip, 10 mm under the hip axis; the belly is 12-15
-mm under it) and the feet come up off the floor, so the servos hold only the legs. The next command that moves
+body lowers onto its belly over 3 s and the feet come down beside it (75 mm out from each hip, 15 mm under the
+hip axis; the belly is 12-15 mm under it): it lies on its belly and six feet, steadier than on the belly alone,
+and the servos hold only the legs. The next command that moves
 stands it up again over 3 s; commands are taken as zero until it is up, so a stream of `/cmd_vel` walks on from
 there (a single message sent while it lies down is dropped). `info` shows the setting and whether it is up,
 lying down or between. Power off is the robot's switch.
@@ -207,7 +208,7 @@ monitor under `low_bat_mv` (default 6400 mV) for 30 readings in a row (1 Hz) tak
 lies down (walking sags the pack; those readings are not counted). The robot drops its command, finishes the
 stride, lies down as in Idle, the micro-ROS session is closed, and the board sleeps (after 15 s at most, lying
 down or not). Commands are dropped from the request on. The servo controller has no "servos off", so it keeps
-holding the lying pose (feet up: the legs only) and stays on with the battery monitor; the servo line is held
+holding the lying pose (on the belly and the feet: the legs only) and stays on with the battery monitor; the servo line is held
 idle through the sleep. Press BOOT (or EN) to wake it: that is a boot, so the robot stands up into its boot
 pose; the press that woke it does not select the console. `info` says `woken from the final shutdown` and
 shows the floor. The power switch still cuts everything.

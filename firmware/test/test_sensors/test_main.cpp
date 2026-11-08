@@ -182,7 +182,7 @@ static void test_rest_lies_down_and_stands_up() {
     const Geometry& g = minihexa_geometry();
     for (int leg = 0; leg < kLegs; ++leg) {
         const Vec3 f = leg_fk(g, leg, {r.commanded(leg * 3), r.commanded(leg * 3 + 1), r.commanded(leg * 3 + 2)});
-        TEST_ASSERT_FLOAT_WITHIN(0.0005f, -0.010f, f.z);
+        TEST_ASSERT_FLOAT_WITHIN(0.0005f, -0.015f, f.z);
         TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.075f, std::hypot(f.x - g.hip[leg].x, f.y - g.hip[leg].y));
         TEST_ASSERT_FALSE(r.foot_down(leg));
     }
