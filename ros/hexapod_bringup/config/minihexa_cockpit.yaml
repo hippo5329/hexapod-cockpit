@@ -3,8 +3,8 @@
 # base_frame base_footprint (the top of this robot's tree: odom -> base_footprint -> base_link), travel
 # thresholds 0.1 m / 0.15 rad (it walks ~0.03 m/s), LD19 range 8 m, the map every 2 s.
 # The nav2 block is the reference's with the hexapod's: frames base_footprint, controller and smoother at
-# 10 Hz (a 100 Hz /cmd_vel gave late gait ticks, 2026-11-06), MPPI Omni up to 0.055 m/s each way (the gait's top
-# speed is 57 mm/s; tile slip leaves ~70 % of it on the ground) and 0.42 rad/s (the gait's top turn is 0.43),
+# 10 Hz (a 100 Hz /cmd_vel gave late gait ticks, 2026-11-06), MPPI Omni up to 0.10 m/s each way (the gait's top
+# speed is 107 mm/s at its 0.8 s cycle; tile slip leaves ~72 % on the ground) and 0.75 rad/s (the gait's top is 0.8),
 # radius 0.17 m (frame 240 x 234 mm), inflation 0.45, progress 0.10 m in 30 s, goal yaw 0.25 rad.
 # The slam block is flat (slam.launch.py wraps it): explore and nav2 read slam.base_frame from it.
 # explore: min_frontier_size 0.3 (0.5, explore_lite's own, found 'no frontiers' in this furnished room after
@@ -127,33 +127,33 @@ nav2:
         # at walls: the collision monitor scaled the in-place turn to nothing and reversing was off).
         plugin: nav2_mppi_controller::MPPIController
         motion_model: Omni
-        # 2.5 s of horizon (14 cm at 0.055 m/s), noise 0.03 and the goal critics only in the last 0.2 m: with 4 s,
+        # 2.5 s of horizon (25 cm at 0.10 m/s), noise 0.03 and the goal critics only in the last 0.2 m: with 4 s,
         # 0.02 and 0.5 m it drove 12 cm goals at 0.011-0.013 m/s (a full-speed rollout overshot the goal).
         time_steps: 25
         model_dt: 0.1
         batch_size: 1000
         iteration_count: 1
-        vx_std: 0.03
-        vy_std: 0.03
-        wz_std: 0.3
-        vx_max: 0.055
-        vx_min: -0.055
-        vy_max: 0.055
-        # The gait's top turn: the stride limit (57 mm/s at a foot) on the outermost foot, 0.134 m out: 0.43 rad/s
-        # (sim/tools/turn_rate_sim). 0.42 keeps the gait off its clamp.
-        wz_max: 0.42
-        ax_max: 0.1
-        ax_min: -0.1
-        ay_max: 0.1
+        vx_std: 0.05
+        vy_std: 0.05
+        wz_std: 0.4
+        vx_max: 0.10
+        vx_min: -0.10
+        vy_max: 0.10
+        # The gait's top turn: the stride limit at a foot (107 mm/s at the 0.8 s cycle) on the outermost foot, 0.134 m
+        # out: 0.8 rad/s (sim/tools/turn_rate_sim). 0.75 keeps the gait off its clamp.
+        wz_max: 0.75
+        ax_max: 0.2
+        ax_min: -0.2
+        ay_max: 0.2
         # ay_min defaults to -3.0: each rollout's vy then grew at most 0.01 per step but fell 0.3, the clamped noise
         # averaged toward zero and a side-step ran at 0.011 m/s (|vy| <= 0.029, vx reached 0.055). Symmetric, as ax.
-        ay_min: -0.1
-        az_max: 0.6
+        ay_min: -0.2
+        az_max: 1.0
         # Scaled to the robot: gamma / std^2 is the control cost's weight, 0.015 / 0.03^2 = 17 (44x the reference's
-        # 0.015 / 0.2^2) held every command near zero (0.011-0.020 m/s, |vy| <= 0.006); 0.0005 / 0.03^2 = 0.56. Rollouts
+        # 0.015 / 0.2^2) held every command near zero (0.011-0.020 m/s, |vy| <= 0.006); now 0.00125 / 0.05^2 = 0.5. Rollouts
         # 2.5 s long end centimetres apart, so the critics' costs differ by tenths: temperature 0.05, not 0.3.
         temperature: 0.05
-        gamma: 0.0005
+        gamma: 0.00125
         prune_distance: 1.0
         transform_tolerance: 0.3
         enforce_path_inversion: false
@@ -255,7 +255,7 @@ nav2:
       robot_base_frame: base_footprint
       transform_tolerance: 0.3
       simulate_ahead_time: 2.0
-      max_rotational_vel: 0.42
+      max_rotational_vel: 0.75
       min_rotational_vel: 0.15
       rotational_acc_lim: 3.72
   velocity_smoother:
@@ -265,21 +265,21 @@ nav2:
       scale_velocities: false
       feedback: OPEN_LOOP
       max_velocity:
-      - 0.055
-      - 0.055
-      - 0.42
+      - 0.10
+      - 0.10
+      - 0.75
       min_velocity:
-      - -0.055
-      - -0.055
-      - -0.42
+      - -0.10
+      - -0.10
+      - -0.75
       max_accel:
-      - 0.1
-      - 0.1
-      - 0.6
+      - 0.2
+      - 0.2
+      - 1.0
       max_decel:
-      - -0.1
-      - -0.1
-      - -0.8
+      - -0.2
+      - -0.2
+      - -1.0
       odom_topic: odom
       odom_duration: 0.1
       deadband_velocity:
