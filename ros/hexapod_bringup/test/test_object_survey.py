@@ -104,3 +104,14 @@ def test_markdown_by_room():
     assert "| chair | study |" in md and "| cup | - |" in md
     assert "- **study**: chair" in md and "- **gym**: tv" in md and "- **elsewhere**: cup" in md
     assert "in the gym, 8 of 8" in md
+
+
+def test_frame_pose_exact_then_latest_never_far():
+    held = {10.0: (1.0, 2.0, 0.5, 10.0)}
+    exact = lambda st: held.get(st)
+    latest = lambda: (3.0, 4.0, 0.1, 9.85)
+    assert osv.pose_for_frame(exact, latest, 10.0) == (1.0, 2.0, 0.5, 10.0)
+    # newer than the buffer (the usual case: odom TF lags the camera): the latest, if close
+    assert osv.pose_for_frame(exact, latest, 10.07) == (3.0, 4.0, 0.1, 9.85)
+    assert osv.pose_for_frame(exact, latest, 10.5) is None
+    assert osv.pose_for_frame(exact, lambda: None, 10.07) is None

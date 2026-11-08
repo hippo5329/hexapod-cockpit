@@ -163,6 +163,19 @@ def keep_sighting(o, max_range=3.0, min_score=0.45):
     return not (o.get("clipped") and o.get("from") == "floor contact")
 
 
+def pose_for_frame(exact, latest, stamp, slack=0.3):
+    """The robot's (x, y, yaw, t) for a camera frame stamped `stamp`: `exact(stamp)` if the TF buffer holds it,
+    else `latest()` if that is within `slack` s of the frame. Never waits: the frame (stamped at receipt, ~70 ms
+    old) is newer than the newest odom TF (~165 ms old), and waiting for one in the node's only executor thread
+    blocks the very TF it waits for -- no survey saw anything (2026-11-08). Standing in a dwell, the latest
+    pose is the frame's. None if neither."""
+    p = exact(stamp)
+    if p is not None:
+        return p
+    q = latest()
+    return q if q is not None and abs(q[3] - stamp) <= slack else None
+
+
 def fmt_t(t):
     return time.strftime("%H:%M:%S", time.gmtime(t))
 
@@ -277,14 +290,20 @@ def main():
             self.get_logger().info(f"object survey: every {self.sched.every_m} m, {self.steps} headings, note {self.prefix}.md")
 
         # ---------------------------------------------------------------- inputs
-        def robot_xy(self):
+        def tf_pose(self, at):
+            """map -> base_footprint at `at` (a Time; Time() the latest) as (x, y, yaw, t); None if not held."""
             try:
-                t = self.tf.lookup_transform("map", "base_footprint", Time())
+                t = self.tf.lookup_transform("map", "base_footprint", at)
             except tf2_ros.TransformException:
                 return None
             q = t.transform.rotation
             yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
-            return t.transform.translation.x, t.transform.translation.y, yaw
+            st = t.header.stamp
+            return t.transform.translation.x, t.transform.translation.y, yaw, st.sec + st.nanosec * 1e-9
+
+        def robot_xy(self):
+            p = self.tf_pose(Time())
+            return p[:3] if p else None
 
         def on_map(self, m):
             i = m.info
@@ -312,14 +331,11 @@ def main():
             objs = [o for o in v.get("objects", []) if keep_sighting(o, self.max_range, self.min_score)]
             if not objs:
                 return
-            try:
-                t = self.tf.lookup_transform("map", "base_footprint", Time(nanoseconds=int(stamp * 1e9)),
-                                             timeout=Duration(seconds=0.2))
-            except tf2_ros.TransformException:
+            pose = pose_for_frame(lambda st: self.tf_pose(Time(nanoseconds=int(st * 1e9))),
+                                  lambda: self.tf_pose(Time()), stamp)
+            if pose is None:
                 return
-            tx, ty = t.transform.translation.x, t.transform.translation.y
-            q = t.transform.rotation
-            yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+            tx, ty, yaw = pose[:3]
             c, s = math.cos(yaw), math.sin(yaw)
             for o in objs:
                 x, y = tx + c * o["x"] - s * o["y"], ty + s * o["x"] + c * o["y"]
