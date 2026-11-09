@@ -50,6 +50,9 @@ Parameters:
   rate              5.0 Hz, the most frames processed per second (the newest is taken, others dropped)
   threads           4, onnxruntime's threads (set them: in a cell it cannot pin its default count)
   climb_height      0.045 m: higher than this above the floor is an obstacle, lower is climbed
+  size_check        true: a detection whose box fills the view (three edges or more: a wall, a door, a bin at
+                    0.2 m) or whose size at its distance cannot be its label (SIZES: a 2.5 m "refrigerator", a
+                    0.3 m "bathtub") is refused, listed under "refused" in camera/vision with the reason
   scan_range        1.0 m, how far camera/obstacle_scan reports: further out a degree of tilt error lifts
                     the floor past climb_height (1.7 cm a metre), and a ring of far floor read as a wall
                     fenced the robot in after a look-around (2026-11-08)
@@ -203,6 +206,44 @@ class OWLv2:
                 continue
             dets.append((label_name(self.labels[int(i)]), float(sc), (x1, y1, x2, y2)))
         return nms(nms(dets, 0.5), 0.85, same_label=False)
+
+
+# Real sizes (m) of the labels a low camera confuses with walls, doors and close-ups: (least, most) of the width
+# seen (the shorter footprint side to the longer) and of the height. Generous: a name is refused only when the
+# box, at the object's distance, cannot be that thing. Labels not listed are not checked.
+SIZES = {
+    "bathtub": ((0.55, 1.9), (0.35, 0.75)), "refrigerator": ((0.45, 1.0), (0.8, 2.0)),
+    "oven": ((0.45, 0.95), (0.45, 1.0)), "microwave": ((0.3, 0.7), (0.18, 0.5)),
+    "toilet": ((0.3, 0.8), (0.35, 0.9)), "sink": ((0.3, 1.2), (0.1, 1.0)),
+    "bed": ((0.8, 2.3), (0.25, 1.4)), "sofa": ((0.7, 2.6), (0.5, 1.1)),
+    "television": ((0.4, 2.0), (0.25, 1.2)), "door": ((0.6, 1.0), (1.7, 2.3)),
+    "treadmill": ((0.6, 2.2), (0.15, 1.6)), "suitcase": ((0.3, 0.9), (0.3, 0.9)),
+    "cup": ((0.05, 0.15), (0.06, 0.2)), "bottle": ((0.05, 0.15), (0.12, 0.4)), "bowl": ((0.1, 0.35), (0.04, 0.15)),
+    "shoe": ((0.08, 0.35), (0.04, 0.2)), "slipper": ((0.08, 0.35), (0.02, 0.15)), "sock": ((0.05, 0.3), (0.02, 0.3)),
+    "ball": ((0.05, 0.4), (0.05, 0.4)),
+}
+
+
+def implausible(label, box, w, h, fx, fy, z, slack=1.33):
+    """Why a detection cannot be what it is named, or None. box (x1, y1, x2, y2) in a w x h frame; fx, fy the
+    focal lengths (px); z the object's distance along the camera's axis (m). A box touching three or more edges
+    is a surface filling the view (a wall, a door, a bin at 0.2 m), not an object. Else the box's metric width and
+    height against SIZES, with `slack` either way; a side cut by the frame is only a lower bound."""
+    x1, y1, x2, y2 = box
+    cut_l, cut_r, cut_t, cut_b = x1 <= 2, x2 >= w - 3, y1 <= 2, y2 >= h - 3
+    if cut_l + cut_r + cut_t + cut_b >= 3:
+        return "fills the view"
+    size = SIZES.get(label)
+    if size is None or not (z and z > 0):
+        return None
+    for name, px, f, cut, (lo, hi) in (("wide", x2 - x1, fx, cut_l or cut_r, size[0]),
+                                       ("tall", y2 - y1, fy, cut_t or cut_b, size[1])):
+        m = px * z / f
+        if m > hi * slack:
+            return f"{m:.2f} m {name}, a {label} is at most {hi:.2f}"
+        if not cut and m < lo / slack:
+            return f"{m:.2f} m {name}, a {label} is at least {lo:.2f}"
+    return None
 
 
 def label_name(phrase):
@@ -435,6 +476,7 @@ def main():
             self.img_pub = self.create_publisher(CompressedImage, "camera/vision/image/compressed", qos_profile_sensor_data)
             self.scan_pub = self.create_publisher(LaserScan, "camera/obstacle_scan", qos_profile_sensor_data)
             self.scan_range = float(p("scan_range", 1.0))
+            self.size_check = bool(p("size_check", True))
             threading.Thread(target=self.work, daemon=True).start()
 
         def on_info(self, m):
@@ -478,7 +520,7 @@ def main():
             pts, obst, X, Y, fit = (self.depth.obstacles(bgr, self.K, self.D, self.height, pitch, self.roll, self.cam_x, self.cam_y)
                                     if self.depth else (np.zeros((0, 2)), None, None, None, False))
             t2 = time.time()
-            objs, arr = [], Detection2DArray()
+            objs, arr, refused = [], Detection2DArray(), []
             arr.header = m.header
             for label, score, (x1, y1, x2, y2) in self.det(bgr):
                 g, how = gp((x1 + x2) / 2, y2), "floor contact"
@@ -494,6 +536,12 @@ def main():
                 if g:
                     o.update(x=round(g[0], 3), y=round(g[1], 3), dist=round(math.hypot(*g), 3),
                              bearing=round(math.degrees(math.atan2(g[1], g[0])), 1))
+                if self.size_check:
+                    why = implausible(label, (x1, y1, x2, y2), w, h, self.K[0, 0], self.K[1, 1],
+                                      g[0] - self.cam_x if g else None)
+                    if why:
+                        refused.append(f"{label} ({why})")
+                        continue
                 objs.append(o)
                 d = Detection2D()
                 d.header = m.header
@@ -518,7 +566,7 @@ def main():
                 self.scan_pub.publish(sc)
             ms = round((time.time() - t0) * 1000)
             self.json_pub.publish(String(data=json.dumps({"stamp": m.header.stamp.sec + m.header.stamp.nanosec * 1e-9,
-                                                          "objects": objs, "free": free,
+                                                          "objects": objs, "refused": refused, "free": free,
                                                           "pitch_deg": round(math.degrees(pitch), 2), "ms": ms,
                                                           "ms_depth": round((t2 - t1) * 1000)})))
             self.det_pub.publish(arr)

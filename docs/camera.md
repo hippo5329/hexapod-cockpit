@@ -168,4 +168,6 @@ After every survey and at the end, the survey rewrites its note:
 Rooms are polygons in the **home frame**: home's position is the origin and its heading is +x. A map made fresh
 at home each run keeps the rooms where they are. `home_pose` places home on the run's map. A TERM stops the
 survey: it cancels a turn under way and writes the note. The labels are the detector's, with its mistakes (above): OWLv2 names a white wall or door that fills the frame
-"bathtub" or "refrigerator"; with OWLv2 pass `min_score:=0.2 confirm_score:=0.5`.
+"bathtub" or "refrigerator" (`camera_vision` refuses those: a box touching three edges of the frame is a surface, and
+a name whose real size at the measured distance is impossible, a 2.5 m "refrigerator" or a 0.3 m "bathtub", is dropped;
+`refused` in `camera/vision` lists them with the reason); with OWLv2 pass `min_score:=0.2 confirm_score:=0.5`.

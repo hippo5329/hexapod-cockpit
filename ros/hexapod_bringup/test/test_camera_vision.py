@@ -71,3 +71,23 @@ def test_label_name():
     assert cv.label_name("Computer Monitor") == "computer_monitor"
     assert cv.label_name("slipper.") == "slipper"
     assert all(cv.label_name(w) == cv.label_name(cv.label_name(w)) for w in cv.HOUSEHOLD.split(","))
+
+
+def test_implausible_refuses_surfaces_and_wrong_sizes():
+    import camera_vision as cv
+    W, H, F = 320, 240, 280.0
+    # a white wall at 0.27 m filling the frame, named bathtub: a surface, not an object
+    assert cv.implausible("bathtub", (0, 0, 319, 239), W, H, F, F, 0.27) == "fills the view"
+    # a "refrigerator" 2.5 m wide at 2 m (a white wall), and a "bathtub" 0.3 m long at 0.6 m (a bin)
+    assert "at most" in cv.implausible("refrigerator", (10, 0, 10 + 350, 200), W, H, F, F, 2.0)
+    assert "at least" in cv.implausible("bathtub", (100, 100, 100 + 140, 200), W, H, F, F, 0.6)
+    # a real fridge 0.7 m wide at 2 m, its top cut by the low camera (height only a lower bound): kept
+    assert cv.implausible("refrigerator", (100, 0, 100 + 98, 230), W, H, F, F, 2.0) is None
+    # a door at 2 m cut top and bottom is two edges, not three; 0.8 m wide: kept
+    assert cv.implausible("door", (50, 0, 50 + 112, 239), W, H, F, F, 2.0) is None
+    # a slipper 0.25 m long at 0.8 m: kept; a "slipper" 1 m long: refused
+    assert cv.implausible("slipper", (120, 180, 120 + 88, 200), W, H, F, F, 0.8) is None
+    assert cv.implausible("slipper", (20, 150, 20 + 280, 200), W, H, F, F, 0.8) is not None
+    # labels without a size, or no distance: not judged by size
+    assert cv.implausible("lamp", (10, 10, 300, 200), W, H, F, F, 1.0) is None
+    assert cv.implausible("bathtub", (100, 100, 140, 120), W, H, F, F, None) is None
