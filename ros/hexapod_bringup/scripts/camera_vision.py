@@ -55,6 +55,10 @@ Parameters:
                     0.3 m "bathtub") or that is the floor itself (60 % of the box floor, under 10 % raised, for a
                     label at least 0.15 m tall) is refused, listed under "refused" in camera/vision with the reason;
                     each object carries its box's floor and raised fractions
+  avoid_score       0.25: a detection of a low thing the legs cannot cross (AVOID: slipper, shoe, sock, cable,
+                    ...) at this score or more puts the floor under its box into camera/obstacle_scan: under
+                    climb_height the depth calls it floor, and the LiDAR passes over it (stuck in a slipper,
+                    2026-11-09); such objects carry "avoid": true
   scan_range        1.0 m, how far camera/obstacle_scan reports: further out a degree of tilt error lifts
                     the floor past climb_height (1.7 cm a metre), and a ring of far floor read as a wall
                     fenced the robot in after a look-around (2026-11-08)
@@ -248,6 +252,22 @@ def implausible(label, box, w, h, fx, fy, z, slack=1.33):
         if not cut and m < lo / slack:
             return f"{m:.2f} m {name}, a {label} is at least {lo:.2f}"
     return None
+
+
+# Low things the legs cannot walk over or through: under climb_height, so the depth calls them floor, and under
+# the LiDAR's plane. The robot stuck in a slipper (2026-11-09). Named by the detector, the floor under the box is
+# an obstacle in camera/obstacle_scan whatever its height.
+AVOID = frozenset(("slipper", "shoe", "sock", "cable", "power_strip", "toy", "ball", "towel", "book", "dumbbell",
+                   "charger", "umbrella"))
+
+
+def avoid_points(box, X, Y, floor, obst):
+    """The floor and raised points (N, 2; x ahead, y left, m) inside box (x1, y1, x2, y2): where a low object the
+    detector named lies, for the obstacle scan."""
+    x1, y1, x2, y2 = (int(round(v)) for v in box)
+    sel = (slice(max(y1, 0), y2 + 1), slice(max(x1, 0), x2 + 1))
+    m = floor[sel] | obst[sel]
+    return np.column_stack([X[sel][m], Y[sel][m]])
 
 
 def on_the_floor(label, floor_frac, raised_frac, min_floor=0.6, max_raised=0.1):
@@ -497,6 +517,7 @@ def main():
             self.scan_pub = self.create_publisher(LaserScan, "camera/obstacle_scan", qos_profile_sensor_data)
             self.scan_range = float(p("scan_range", 1.0))
             self.size_check = bool(p("size_check", True))
+            self.avoid_score = float(p("avoid_score", 0.25))
             threading.Thread(target=self.work, daemon=True).start()
 
         def on_info(self, m):
@@ -540,7 +561,7 @@ def main():
             pts, obst, X, Y, fit, floor = (self.depth.obstacles(bgr, self.K, self.D, self.height, pitch, self.roll, self.cam_x, self.cam_y)
                                            if self.depth else (np.zeros((0, 2)), None, None, None, False, None))
             t2 = time.time()
-            objs, arr, refused = [], Detection2DArray(), []
+            objs, arr, refused, low = [], Detection2DArray(), [], []
             arr.header = m.header
             for label, score, (x1, y1, x2, y2) in self.det(bgr):
                 g, how = gp((x1 + x2) / 2, y2), "floor contact"
@@ -567,6 +588,9 @@ def main():
                     if why:
                         refused.append(f"{label} ({why})")
                         continue
+                if fit and label in AVOID and score >= self.avoid_score:
+                    low.append(avoid_points((x1, y1, x2, y2), X, Y, floor, obst))
+                    o["avoid"] = True
                 objs.append(o)
                 d = Detection2D()
                 d.header = m.header
@@ -578,6 +602,8 @@ def main():
                     hyp.pose.pose.position.x, hyp.pose.pose.position.y = g
                 d.results.append(hyp)
                 arr.detections.append(d)
+            if low:  # the named low things join what stands above climb_height
+                pts = np.vstack([pts] + low)
             free = free_floor(pts) if fit else None  # None: no floor fit, nothing known
             if fit:  # no floor fit: nothing is known, so nothing is said (the costmap keeps what it had)
                 half = math.atan2(w / 2.0, self.K[0, 0])

@@ -133,3 +133,28 @@ def test_obstacles_marks_floor_and_raised_pixels():
     v, u = np.nonzero(board)
     around = (slice(v.min(), v.max() + 1), slice(u.min(), u.max() + 1))
     assert cv.on_the_floor("bathtub", floor[around].mean(), obst[around].mean()) is None
+
+
+def test_a_named_slipper_becomes_an_obstacle_in_the_scan():
+    """A slipper is under climb_height (floor to the depth) and under the LiDAR: named by the detector, the
+    floor under its box enters the obstacle scan at its distance (hexa stuck in a slipper, 2026-11-09)."""
+    w, h, height, pitch, cam_x = 320, 240, 0.1575, math.radians(3.0), 0.065
+    assert "slipper" in cv.AVOID and "bathtub" not in cv.AVOID
+    d = cv.Depth.__new__(cv.Depth)
+    d.rise, d.rays, d.key = 0.045, None, None
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    r = d.camera_rays(K, D, w, h) @ np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]]).T
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.where(r[..., 2] < -1e-3, height / -r[..., 2], 50.0)
+    d.disparity = lambda bgr: 1.0 / t + 0.1
+    pts, obst, X, Y, fit, floor = d.obstacles(np.zeros((h, w, 3), np.uint8), K, D, height, pitch, 0.0, cam_x)
+    half = math.atan2(w / 2.0, K[0, 0])
+    assert fit and np.isinf(cv.obstacle_scan(pts, half)).all()  # bare floor: nothing in the scan
+    # the box of a slipper about 0.6 m ahead, centred
+    v = int(np.argmin(np.abs(np.where(np.isfinite(X[:, 160]), X[:, 160], 99) - 0.6)))
+    box = (140, v - 4, 180, v + 4)
+    low = cv.avoid_points(box, X, Y, floor, obst)
+    assert len(low) > 100 and (np.abs(low[:, 0] - 0.6) < 0.08).all()
+    rng = cv.obstacle_scan(np.vstack([pts, low]), half)
+    hit = rng[np.isfinite(rng)]
+    assert len(hit) >= 2 and (np.abs(hit - 0.6) < 0.1).all()
