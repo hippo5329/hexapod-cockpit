@@ -135,3 +135,19 @@ def test_frame_pose_exact_then_latest_never_far():
     assert osv.pose_for_frame(exact, latest, 10.07) == (3.0, 4.0, 0.1, 9.85)
     assert osv.pose_for_frame(exact, latest, 10.5) is None
     assert osv.pose_for_frame(exact, lambda: None, 10.07) is None
+
+
+def test_open_space_by_sector():
+    import math
+    n = 360
+    angles = [2 * math.pi * i / n for i in range(n)]
+    room = [2.0] * n                      # a room: 2 m everywhere
+    assert osv.open_space(angles, room) == pytest.approx((2.0, 2.0))
+    door = [0.35 if (i // 45) % 4 in (1, 3) else 3.0 for i in range(n)]  # a doorway: walls 0.35 m left and right
+    least, median = osv.open_space(angles, door)
+    assert least == pytest.approx(0.35) and least < 0.45
+    corner = [0.5 if i < 180 else 3.0 for i in range(n)]  # a corner: half the sectors at 0.5 m
+    least, median = osv.open_space(angles, corner)
+    assert median < 0.9
+    self_hits = [0.1] * n                 # returns inside 0.25 m are the robot: an empty sector is 9 m
+    assert osv.open_space(angles, self_hits) == pytest.approx((9.0, 9.0))

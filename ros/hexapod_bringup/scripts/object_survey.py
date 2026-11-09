@@ -31,16 +31,22 @@ and objects/markers (visualization_msgs/MarkerArray, map frame) for RViz.
   map                          nav_msgs/OccupancyGrid (for the picture)    in
   explore/resume               std_msgs/Bool                               out
   spin                         nav2_msgs/action/Spin                       client
+  scan                         sensor_msgs/LaserScan (room to survey)      in
   objects/markers              visualization_msgs/MarkerArray              out
 
 Parameters:
   note_prefix     /tmp/objects, where the note goes (no extension)
-  survey_every_m  1.5 m of travel on the map between surveys (0: no surveys, labels while walking only)
+  survey_every_m  2.0 m of travel on the map between surveys (0: no surveys, labels while walking only)
   min_gap_s       60 s, the least time between surveys
   start_delay_s   15 s before the first (the explorer subscribed, the stack settled)
   steps           8: a full circle in 45-degree turns (the camera's view overlaps the next)
-  dwell_s         2.0 s at each heading, the first settle_s of it not counted (the gait stands, the frame clears)
-  settle_s        0.8 s
+  dwell_s         1.5 s at each heading, the first settle_s of it not counted (the gait stands, the frame clears)
+  settle_s        0.6 s
+  open_min_m      0.45, open_median_m 0.9: a due survey waits for open space (by /scan, 8 sectors: the nearest
+                  return at least open_min_m, half the sectors open_median_m or more): not in a doorway or a corner,
+                  where turns are refused and there is little to see
+  postpone_m      2.0 m: walked that far waiting for open space, the survey is skipped
+  revisit_m       1.2 m: a due survey this near an earlier one is skipped
   max_range       2.0 m: farther sightings are not kept (the depth reads short past ~1.5 m)
   min_score       0.45, the least score kept (NanoDet's scale; OWLv2's runs lower: 0.2)
   confirm_score   0.7: seen this sure at two headings of the surveys confirms an object (OWLv2: 0.5)
@@ -182,6 +188,20 @@ class Schedule:
         self.travel, self.last_t = 0.0, now
 
 
+def open_space(angles, ranges, self_m=0.25, sectors=8):
+    """Room around the robot from a scan: the nearest return in each of `sectors` equal sectors (returns inside
+    self_m are the robot itself; a sector with none is 9 m). Returns (the least, the lower median: half the sectors
+    are at least this open) in m."""
+    near = [9.0] * sectors
+    for a, r in zip(angles, ranges):
+        if not (math.isfinite(r) and r >= self_m):
+            continue
+        k = int((a % (2 * math.pi)) / (2 * math.pi) * sectors) % sectors
+        near[k] = min(near[k], r)
+    srt = sorted(near)
+    return srt[0], srt[sectors // 2 - 1]
+
+
 def keep_sighting(o, max_range=2.0, min_score=0.45):
     """camera_vision's object: has a position, near enough, sure enough, not a person or pet; a box cut by the
     frame's bottom edge placed by floor contact is not placed at all (its contact is out of the frame)."""
@@ -282,7 +302,7 @@ def main():
     import tf2_ros
     from nav2_msgs.action import Spin
     from nav_msgs.msg import OccupancyGrid
-    from sensor_msgs.msg import CompressedImage
+    from sensor_msgs.msg import CompressedImage, LaserScan
     from std_msgs.msg import Bool, String
     from visualization_msgs.msg import Marker, MarkerArray
 
@@ -291,12 +311,17 @@ def main():
             super().__init__("object_survey")
             p = lambda n, d: self.declare_parameter(n, d).value
             self.prefix = p("note_prefix", "/tmp/objects")
-            self.sched = Schedule(float(p("survey_every_m", 1.5)), float(p("min_gap_s", 60.0)))
+            self.sched = Schedule(float(p("survey_every_m", 2.0)), float(p("min_gap_s", 60.0)))
+            # Where not to survey (a doorway, a corner, beside an earlier survey): 38 % of run 9 was surveys,
+            # some in a doorway with turns refused and three within 3 m in the gym (2026-11-09).
+            self.open_min, self.open_median = float(p("open_min_m", 0.45)), float(p("open_median_m", 0.9))
+            self.postpone_m, self.revisit_m = float(p("postpone_m", 2.0)), float(p("revisit_m", 1.2))
+            self.wait_from, self.scan = None, None
             self.start_delay_s = float(p("start_delay_s", 15.0))
             rooms_file, home = p("rooms_file", ""), [float(v) for v in str(p("home_pose", "0,0,0")).split(",")]
             self.rooms = Rooms(json.load(open(rooms_file))["rooms"] if rooms_file else (),
                                (home[0], home[1], math.radians(home[2])))
-            self.steps, self.dwell_s, self.settle_s = int(p("steps", 8)), float(p("dwell_s", 2.0)), float(p("settle_s", 0.8))
+            self.steps, self.dwell_s, self.settle_s = int(p("steps", 8)), float(p("dwell_s", 1.5)), float(p("settle_s", 0.6))
             self.max_range, self.min_score = float(p("max_range", 2.0)), float(p("min_score", 0.45))
             self.om = ObjectMap(float(p("merge_m", 0.5)), float(p("merge_large_m", 0.9)), float(p("confirm_score", 0.7)),
                                 float(p("merge_any_m", 0.35)))
@@ -312,6 +337,7 @@ def main():
             self.goal = None
             self.create_subscription(String, "camera/vision", self.on_vision, 10)
             self.create_subscription(CompressedImage, "camera/vision/image/compressed", self.on_frame, qos_profile_sensor_data)
+            self.create_subscription(LaserScan, "scan", self.on_scan, qos_profile_sensor_data)
             self.create_subscription(OccupancyGrid, "map", self.on_map,
                                      QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
             os.makedirs(self.prefix + "_img", exist_ok=True)
@@ -333,6 +359,20 @@ def main():
         def robot_xy(self):
             p = self.tf_pose(Time())
             return p[:3] if p else None
+
+        def on_scan(self, m):
+            self.scan = ([m.angle_min + i * m.angle_increment for i in range(len(m.ranges))], list(m.ranges))
+
+        def not_here(self, pose):
+            """Why not to survey here, or None."""
+            for s in self.surveys:
+                if math.hypot(s["x"] - pose[0], s["y"] - pose[1]) < self.revisit_m:
+                    return "revisit", f"surveyed {math.hypot(s['x'] - pose[0], s['y'] - pose[1]):.1f} m from here"
+            if self.scan:
+                least, median = open_space(*self.scan)
+                if least < self.open_min or median < self.open_median:
+                    return "tight", f"tight: nearest {least:.2f} m, median {median:.2f} m"
+            return None
 
         def on_map(self, m):
             i = m.info
@@ -417,7 +457,23 @@ def main():
                         self.path_m += d
                     self.path.append((pose[0], pose[1]))
                     self.sched.moved(pose[0], pose[1])
-            if self.state == "walk" and pose and now - self.started >= self.start_delay_s and self.sched.due(now):
+            due = self.state == "walk" and pose and now - self.started >= self.start_delay_s and self.sched.due(now)
+            if due:
+                why = self.not_here(pose)
+                if why and (why[0] == "revisit" or (self.wait_from is not None
+                                                    and self.sched.travel - self.wait_from >= self.postpone_m)):
+                    self.get_logger().info(f"survey {len(self.surveys) + 1} skipped at ({pose[0]:+.2f}, {pose[1]:+.2f}): {why[1]}")
+                    self.sched.done(now)
+                    self.wait_from = None
+                    due = False
+                elif why:
+                    if self.wait_from is None:
+                        self.wait_from = self.sched.travel
+                        self.get_logger().info(f"survey {len(self.surveys) + 1} postponed: {why[1]}")
+                    due = False
+                else:
+                    self.wait_from = None
+            if due:
                 self.get_logger().info(f"survey {len(self.surveys) + 1}: pausing explore at ({pose[0]:+.2f}, {pose[1]:+.2f})")
                 self.explore(False)
                 self.cur = {"t": now, "x": pose[0], "y": pose[1], "steps": self.steps, "headings": 0, "seen": {},
