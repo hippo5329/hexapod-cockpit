@@ -322,6 +322,8 @@ nav2:
       stop_pub_timeout: 2.0
       polygons:
       - FootprintApproach
+      - SonarSlow
+      - SonarStop
       FootprintApproach:
         type: polygon
         action_type: approach
@@ -329,6 +331,54 @@ nav2:
         time_before_collision: 1.2
         simulation_time_step: 0.1
         min_points: 6
+        visualize: false
+        enabled: true
+        sources_names: [scan]  # the LiDAR only: the sonar has its own zones below
+      # The sonar sits at x 0.08, inside the 0.17 m footprint: an echo nearer than 9 cm (a chair leg under the
+      # LiDAR's plane) lies inside it, the approach polygon's collision time is 0 for every command and the
+      # robot freezes, backing up included (Nav2's BackUp "failed"; run 10, 2026-11-09). So the sonar only slows
+      # and stops forward motion: backing up, turning in place and side steps use a zone it never marks.
+      SonarSlow:
+        type: velocity_polygon
+        action_type: slowdown
+        slowdown_ratio: 0.3
+        sources_names: [sonar]
+        min_points: 3
+        holonomic: false
+        velocity_polygons: [ahead, other]
+        ahead:  # an echo within 0.40 m of the centre (0.32 m from the sonar)
+          points: "[[0.40, 0.12], [0.40, -0.12], [0.0, -0.12], [0.0, 0.12]]"
+          linear_min: 0.02
+          linear_max: 1.0
+          theta_min: -3.0
+          theta_max: 3.0
+        other:  # behind the robot, where no sonar echo can be
+          points: "[[-0.50, 0.01], [-0.50, -0.01], [-0.52, -0.01], [-0.52, 0.01]]"
+          linear_min: -1.0
+          linear_max: 0.02
+          theta_min: -3.0
+          theta_max: 3.0
+        visualize: false
+        enabled: true
+      SonarStop:
+        type: velocity_polygon
+        action_type: stop
+        sources_names: [sonar]
+        min_points: 3
+        holonomic: false
+        velocity_polygons: [ahead, other]
+        ahead:  # an echo within 0.25 m of the centre (0.17 m from the sonar, 8 cm past the footprint)
+          points: "[[0.25, 0.10], [0.25, -0.10], [0.0, -0.10], [0.0, 0.10]]"
+          linear_min: 0.02
+          linear_max: 1.0
+          theta_min: -3.0
+          theta_max: 3.0
+        other:
+          points: "[[-0.50, 0.01], [-0.50, -0.01], [-0.52, -0.01], [-0.52, 0.01]]"
+          linear_min: -1.0
+          linear_max: 0.02
+          theta_min: -3.0
+          theta_max: 3.0
         visualize: false
         enabled: true
       observation_sources:
