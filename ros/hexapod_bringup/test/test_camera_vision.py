@@ -93,3 +93,43 @@ def test_implausible_refuses_surfaces_and_wrong_sizes():
     # labels without a size, or no distance: not judged by size
     assert cv.implausible("lamp", (10, 10, 300, 200), W, H, F, F, 1.0) is None
     assert cv.implausible("bathtub", (100, 100, 140, 120), W, H, F, F, None) is None
+
+
+def test_on_the_floor_refuses_a_tall_label_on_bare_floor_only():
+    # run 10's "bathtub": the tiles at the bottom of the frame, nothing raised in the box
+    assert cv.on_the_floor("bathtub", 0.92, 0.0).startswith("the floor")
+    assert cv.on_the_floor("bed", 0.70, 0.05) is not None
+    # a real bathtub or bed side stands in its box; a chair's box is floor between raised legs and a seat
+    assert cv.on_the_floor("bathtub", 0.30, 0.55) is None
+    assert cv.on_the_floor("bed", 0.65, 0.20) is None
+    # low things lie on the floor (a slipper is 2 cm), and labels without a size are not judged
+    assert cv.on_the_floor("slipper", 0.95, 0.0) is None
+    assert cv.on_the_floor("rug", 0.95, 0.0) is None
+
+
+def test_obstacles_marks_floor_and_raised_pixels():
+    """Depth.obstacles on a synthetic scene (no model): the floor, and a 0.3 m tall, 0.2 m wide board 0.8 m
+    ahead. The board's pixels are raised, the floor's are floor, and a box on each reads that way."""
+    w, h, height, pitch, cam_x = 320, 240, 0.1575, math.radians(3.0), 0.065
+    d = cv.Depth.__new__(cv.Depth)
+    d.rise, d.rays, d.key = 0.045, None, None
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    r = d.camera_rays(K, D, w, h) @ np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]]).T
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.where(r[..., 2] < -1e-3, height / -r[..., 2], 50.0)  # the floor, or far away above the horizon
+        tb = (0.8 - cam_x) / r[..., 0]
+        zb, yb = height + tb * r[..., 2], tb * r[..., 1]
+    board = (tb < t) & (zb >= 0) & (zb <= 0.3) & (np.abs(yb) <= 0.1)
+    t = np.where(board, tb, t)
+    a, b = 1.0, 0.1
+    d.disparity = lambda bgr: a / t + b
+    pts, obst, X, Y, fit, floor = d.obstacles(np.zeros((h, w, 3), np.uint8), K, D, height, pitch, 0.0, cam_x)
+    tall = board & (zb > 0.05)  # the board's lowest 4.5 cm is climb height: floor, rightly
+    assert fit and obst[tall].all() and not floor[tall].any()
+    # a box over the bottom-right floor (run 10's corner "bathtub"), and a box around the board
+    corner = (slice(200, 240), slice(230, 320))
+    assert floor[corner].mean() > 0.95 and obst[corner].mean() == 0
+    assert cv.on_the_floor("bathtub", floor[corner].mean(), obst[corner].mean()) is not None
+    v, u = np.nonzero(board)
+    around = (slice(v.min(), v.max() + 1), slice(u.min(), u.max() + 1))
+    assert cv.on_the_floor("bathtub", floor[around].mean(), obst[around].mean()) is None

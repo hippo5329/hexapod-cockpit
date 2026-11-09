@@ -52,7 +52,9 @@ Parameters:
   climb_height      0.045 m: higher than this above the floor is an obstacle, lower is climbed
   size_check        true: a detection whose box fills the view (three edges or more: a wall, a door, a bin at
                     0.2 m) or whose size at its distance cannot be its label (SIZES: a 2.5 m "refrigerator", a
-                    0.3 m "bathtub") is refused, listed under "refused" in camera/vision with the reason
+                    0.3 m "bathtub") or that is the floor itself (60 % of the box floor, under 10 % raised, for a
+                    label at least 0.15 m tall) is refused, listed under "refused" in camera/vision with the reason;
+                    each object carries its box's floor and raised fractions
   scan_range        1.0 m, how far camera/obstacle_scan reports: further out a degree of tilt error lifts
                     the floor past climb_height (1.7 cm a metre), and a ring of far floor read as a wall
                     fenced the robot in after a look-around (2026-11-08)
@@ -248,6 +250,20 @@ def implausible(label, box, w, h, fx, fy, z, slack=1.33):
     return None
 
 
+def on_the_floor(label, floor_frac, raised_frac, min_floor=0.6, max_raised=0.1):
+    """Why a detection is the floor itself, or None. floor_frac, raised_frac: the box's pixels within climb
+    height of the floor, and standing above it (the depth's obstacle mask). A box that is mostly floor with
+    next to nothing raised in it holds no object of its label when that label stands at least 0.15 m tall
+    (SIZES): run 10's "bathtub" boxes were the white tiles at the bottom of the frame, a corner or a band, two
+    edges or three. Low things (slipper, sock, rug, cable) do lie on the floor and are not judged."""
+    size = SIZES.get(label)
+    if size is None or size[1][0] < 0.15:
+        return None
+    if floor_frac >= min_floor and raised_frac < max_raised:
+        return f"the floor: {floor_frac:.0%} of the box, {raised_frac:.0%} raised"
+    return None
+
+
 def label_name(phrase):
     """An open-vocabulary phrase as a label: lower case, words joined by '_' (COCO's style)."""
     return "_".join(phrase.lower().replace(".", " ").split())
@@ -372,7 +388,8 @@ class Depth:
         return self.rays
 
     def obstacles(self, bgr, K, D, height, pitch, roll, cam_x, cam_y=0.0):
-        """(obstacle points (N, 2) x ahead, y left in m; obstacle pixel mask; per pixel x, y (m); fit ok)."""
+        """(obstacle points (N, 2) x ahead, y left in m; obstacle pixel mask; per pixel x, y (m); fit ok; floor
+        pixel mask: within `rise` of the floor, nearer than 3 m)."""
         h, w = bgr.shape[:2]
         disp = self.disparity(bgr)
         cp, sp, cr, sr = math.cos(pitch), math.sin(pitch), math.cos(roll), math.sin(roll)
@@ -395,13 +412,14 @@ class Depth:
             sel = below & (np.abs(disp - pred) < 0.08 * np.abs(pred))
             ok = True
         if not ok:
-            return np.zeros((0, 2)), np.zeros((h, w), bool), None, None, False
+            return np.zeros((0, 2)), np.zeros((h, w), bool), None, None, False, np.zeros((h, w), bool)
         with np.errstate(divide="ignore", invalid="ignore"):
             z = np.where(disp - b > 1e-6, a / (disp - b), np.inf)
         up = height + z * r[..., 2]  # the point's height above the floor
         obst = np.isfinite(z) & (z < 2.5) & (up > self.rise) & (up < 0.6)
+        floor = below & np.isfinite(z) & (z < 3.0) & (np.abs(up) <= self.rise)
         X, Y = cam_x + z * r[..., 0], cam_y + z * r[..., 1]
-        return np.column_stack([X[obst], Y[obst]]), obst, X, Y, True
+        return np.column_stack([X[obst], Y[obst]]), obst, X, Y, True, floor
 
 
 def free_floor(pts, half_width=0.12):
@@ -519,8 +537,8 @@ def main():
             pitch = self.pitch + self.mount
             gp = lambda u, v: ground_point(u, v, self.K, self.D, self.height, pitch, self.roll, self.cam_x, self.cam_y)
             t1 = time.time()
-            pts, obst, X, Y, fit = (self.depth.obstacles(bgr, self.K, self.D, self.height, pitch, self.roll, self.cam_x, self.cam_y)
-                                    if self.depth else (np.zeros((0, 2)), None, None, None, False))
+            pts, obst, X, Y, fit, floor = (self.depth.obstacles(bgr, self.K, self.D, self.height, pitch, self.roll, self.cam_x, self.cam_y)
+                                           if self.depth else (np.zeros((0, 2)), None, None, None, False, None))
             t2 = time.time()
             objs, arr, refused = [], Detection2DArray(), []
             arr.header = m.header
@@ -535,12 +553,17 @@ def main():
                         g, how = (float(np.median(xs[near])), float(np.median(ys[near]))), "depth"
                 o = {"label": label, "score": round(score, 2), "box": [round(x1), round(y1), round(x2), round(y2)],
                      "clipped": y2 >= h - 3, "from": how}
+                if fit:  # how much of the box is floor and how much stands above it: the floor check, and its log
+                    box = (slice(int(y1), int(y2) + 1), slice(int(x1), int(x2) + 1))
+                    o.update(floor=round(float(floor[box].mean()), 2), raised=round(float(obst[box].mean()), 2))
                 if g:
                     o.update(x=round(g[0], 3), y=round(g[1], 3), dist=round(math.hypot(*g), 3),
                              bearing=round(math.degrees(math.atan2(g[1], g[0])), 1))
                 if self.size_check:
                     why = implausible(label, (x1, y1, x2, y2), w, h, self.K[0, 0], self.K[1, 1],
                                       g[0] - self.cam_x if g else None)
+                    if not why and fit:
+                        why = on_the_floor(label, o["floor"], o["raised"])
                     if why:
                         refused.append(f"{label} ({why})")
                         continue
