@@ -15,6 +15,7 @@
 //   lidar_pwm   the GPIO wired to the LiDAR's PWM; -1 (default): none, kept, reboots
 //   lidar_duty  the PWM duty, % (0-100), or `auto` (default): the pin released, the LiDAR's own speed
 //               control; applied at once, kept
+//   lidar_pwm_hz  the PWM frequency, 20000-50000 Hz (default 30000, LDROBOT's typical); at once, kept
 // and /control?lidar_motor=0|1 stops it / runs it at lidar_duty now (not kept: every boot runs it). The
 // scan rate is read back from the packets: each LD19 packet carries the motor's speed, deg/s.
 #pragma once
@@ -36,7 +37,9 @@ uint32_t packets();   // datagrams sent
 uint32_t errors();    // the driver's receive errors (onReceiveError)
 
 // The motor (above): at boot, before the network.
-void motor_begin(int pwm_pin, int duty_pct);  // duty -1: released (auto)
+void motor_begin(int pwm_pin, int duty_pct, uint32_t hz);  // duty -1: released (auto)
+bool set_hz(uint32_t hz);                     // false without a pin
+uint32_t pwm_hz();
 bool set_duty(int duty_pct);                  // -1 auto; false without a pin
 bool set_motor(bool run);                     // false without a pin
 int pwm_pin();

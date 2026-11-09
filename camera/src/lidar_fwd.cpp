@@ -43,8 +43,8 @@ int rx = -1;
 uint32_t rx_baud = 230400;
 bool started = false;
 
-// The motor's PWM (lidar_fwd.h). 30 kHz, LDROBOT's typical; 10 bits (80 MHz / 30 kHz holds 11).
-constexpr uint32_t kPwmHz = 30000;
+// The motor's PWM (lidar_fwd.h). 30 kHz by default, LDROBOT's typical; 10 bits (80 MHz / 50 kHz holds 10).
+uint32_t pwm_freq = 30000;
 constexpr uint8_t kPwmBits = 10;
 constexpr uint8_t kPwmChannel = 2;  // timer 1: the camera's XCLK is on timer 0, channel 0
 int pwm = -1, duty_pct = -1;
@@ -101,7 +101,7 @@ void apply_pwm() {
         pinMode(pwm, INPUT);
         return;
     }
-    if (!attached) attached = ledcAttachChannel(pwm, kPwmHz, kPwmBits, kPwmChannel);
+    if (!attached) attached = ledcAttachChannel(pwm, pwm_freq, kPwmBits, kPwmChannel);
     if (!attached) {
         hexa_log::log(hexa_log::kErr, "lidar: PWM on GPIO %d failed", pwm);
         return;
@@ -163,9 +163,9 @@ void start() {
     comm.onReceiveError(rx_err_callback);
     comm.begin(rx_baud, SERIAL_8N1, rx, -1);
     xTaskCreatePinnedToCore(fwd_task, "lidar_fwd", 4096, nullptr, 3, nullptr, 0);
-    hexa_log::log(hexa_log::kNotice, "lidar: forwarding GPIO %d (%u baud) to %s:%u; motor PWM GPIO %d duty %s", rx,
+    hexa_log::log(hexa_log::kNotice, "lidar: forwarding GPIO %d (%u baud) to %s:%u; motor PWM GPIO %d duty %s %u Hz", rx,
                   static_cast<unsigned>(rx_baud), server_ip.toString().c_str(), static_cast<unsigned>(server_port), pwm,
-                  duty_pct < 0 ? "auto" : String(duty_pct).c_str());
+                  duty_pct < 0 ? "auto" : String(duty_pct).c_str(), static_cast<unsigned>(pwm_freq));
 }
 
 void report() {
@@ -177,11 +177,23 @@ void report() {
     last_ms = millis();
 }
 
-void motor_begin(int pwm_pin, int duty) {
+void motor_begin(int pwm_pin, int duty, uint32_t hz) {
     pwm = pwm_pin;
     duty_pct = duty;
+    pwm_freq = hz;
     apply_pwm();
 }
+
+bool set_hz(uint32_t hz) {
+    if (pwm < 0) return false;
+    pwm_freq = hz;
+    if (attached && !ledcChangeFrequency(pwm, pwm_freq, kPwmBits))
+        hexa_log::log(hexa_log::kErr, "lidar: PWM %u Hz failed", static_cast<unsigned>(hz));
+    apply_pwm();
+    return true;
+}
+
+uint32_t pwm_hz() { return pwm_freq; }
 
 bool set_duty(int duty) {
     if (pwm < 0) return false;
