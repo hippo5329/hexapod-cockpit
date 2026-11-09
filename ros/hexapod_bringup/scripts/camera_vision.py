@@ -230,7 +230,9 @@ def implausible(label, box, w, h, fx, fy, z, slack=1.33):
     is a surface filling the view (a wall, a door, a bin at 0.2 m), not an object. Else the box's metric width and
     height against SIZES, with `slack` either way; a side cut by the frame is only a lower bound."""
     x1, y1, x2, y2 = box
-    cut_l, cut_r, cut_t, cut_b = x1 <= 2, x2 >= w - 3, y1 <= 2, y2 >= h - 3
+    # An edge within 2 % of the frame counts as touched: the detector stops a floor band at x 2-4 (run 10).
+    mx, my = max(2, round(0.02 * w)), max(2, round(0.02 * h))
+    cut_l, cut_r, cut_t, cut_b = x1 <= mx, x2 >= w - 1 - mx, y1 <= my, y2 >= h - 1 - my
     if cut_l + cut_r + cut_t + cut_b >= 3:
         return "fills the view"
     size = SIZES.get(label)

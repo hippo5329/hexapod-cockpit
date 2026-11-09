@@ -78,6 +78,8 @@ def test_implausible_refuses_surfaces_and_wrong_sizes():
     W, H, F = 320, 240, 280.0
     # a white wall at 0.27 m filling the frame, named bathtub: a surface, not an object
     assert cv.implausible("bathtub", (0, 0, 319, 239), W, H, F, F, 0.27) == "fills the view"
+    # the floor's lower half, the box stopped 4 px short of the left edge (run 10's "bathtub"): still three edges
+    assert cv.implausible("bathtub", (4, 144, 319, 239), W, H, F, F, 1.0) == "fills the view"
     # a "refrigerator" 2.5 m wide at 2 m (a white wall), and a "bathtub" 0.3 m long at 0.6 m (a bin)
     assert "at most" in cv.implausible("refrigerator", (10, 0, 10 + 350, 200), W, H, F, F, 2.0)
     assert "at least" in cv.implausible("bathtub", (100, 100, 100 + 140, 200), W, H, F, F, 0.6)
