@@ -43,6 +43,73 @@ int rx = -1;
 uint32_t rx_baud = 230400;
 bool started = false;
 
+// The motor's PWM (lidar_fwd.h). 30 kHz, LDROBOT's typical; 10 bits (80 MHz / 30 kHz holds 11).
+constexpr uint32_t kPwmHz = 30000;
+constexpr uint8_t kPwmBits = 10;
+constexpr uint8_t kPwmChannel = 2;  // timer 1: the camera's XCLK is on timer 0, channel 0
+int pwm = -1, duty_pct = -1;
+bool run = true, attached = false;
+
+// LD19 packets, for the motor's speed: 0x54 0x2C, speed (u16 LE, deg/s), ..., CRC-8 (poly 0x4D, as the
+// ldlidar driver's table), 47 bytes.
+constexpr size_t kPkt = 47;
+uint8_t pkt[kPkt];
+size_t pn = 0;
+volatile uint32_t n_frames = 0, n_crc = 0, last_frame_ms = 0;
+volatile uint16_t speed_dps = 0;
+
+uint8_t crc8(const uint8_t* p, size_t n) {
+    uint8_t c = 0;
+    for (size_t i = 0; i < n; i++) {
+        c ^= p[i];
+        for (int k = 0; k < 8; k++) c = c & 0x80 ? static_cast<uint8_t>(c << 1) ^ 0x4D : static_cast<uint8_t>(c << 1);
+    }
+    return c;
+}
+
+void parse(const uint8_t* b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        const uint8_t x = b[i];
+        if (pn == 0) {
+            if (x == 0x54) pkt[pn++] = x;
+            continue;
+        }
+        if (pn == 1) {
+            if (x == 0x2C) pkt[pn++] = x;
+            else if (x != 0x54) pn = 0;
+            continue;
+        }
+        pkt[pn++] = x;
+        if (pn < kPkt) continue;
+        pn = 0;
+        if (crc8(pkt, kPkt - 1) != pkt[kPkt - 1]) {
+            n_crc = n_crc + 1;
+            continue;
+        }
+        speed_dps = static_cast<uint16_t>(pkt[2] | pkt[3] << 8);
+        last_frame_ms = millis();
+        n_frames = n_frames + 1;
+    }
+}
+
+// The pin's level: released (input: the LiDAR's own control), or the PWM at the duty, or stopped.
+void apply_pwm() {
+    if (pwm < 0) return;
+    if (run && duty_pct < 0) {
+        if (attached) ledcDetach(pwm);
+        attached = false;
+        pinMode(pwm, INPUT);
+        return;
+    }
+    if (!attached) attached = ledcAttachChannel(pwm, kPwmHz, kPwmBits, kPwmChannel);
+    if (!attached) {
+        hexa_log::log(hexa_log::kErr, "lidar: PWM on GPIO %d failed", pwm);
+        return;
+    }
+    const uint32_t full = 1u << kPwmBits;  // full = always high
+    ledcWrite(pwm, run ? full * static_cast<uint32_t>(duty_pct) / 100 : 0);
+}
+
 // Counted only: the UART's event task never calls syslog (hexa_log is the loop's); report() logs them,
 // once a second at most (an OTA write overflows this FIFO hundreds of times a second, and a syslog
 // packet for each starved the update: cockpit, 2026-10-10).
@@ -59,6 +126,7 @@ void fwd_task(void*) {
         }
         const size_t cc = comm.read(buf + len, kBuf - len);
         n_bytes = n_bytes + cc;
+        parse(buf + len, cc);
         // No radio, no forwarding: drop the bytes, keep draining.
         if (paused || WiFi.status() != WL_CONNECTED) {
             len = 0;
@@ -95,8 +163,9 @@ void start() {
     comm.onReceiveError(rx_err_callback);
     comm.begin(rx_baud, SERIAL_8N1, rx, -1);
     xTaskCreatePinnedToCore(fwd_task, "lidar_fwd", 4096, nullptr, 3, nullptr, 0);
-    hexa_log::log(hexa_log::kNotice, "lidar: forwarding GPIO %d (%u baud) to %s:%u", rx,
-                  static_cast<unsigned>(rx_baud), server_ip.toString().c_str(), static_cast<unsigned>(server_port));
+    hexa_log::log(hexa_log::kNotice, "lidar: forwarding GPIO %d (%u baud) to %s:%u; motor PWM GPIO %d duty %s", rx,
+                  static_cast<unsigned>(rx_baud), server_ip.toString().c_str(), static_cast<unsigned>(server_port), pwm,
+                  duty_pct < 0 ? "auto" : String(duty_pct).c_str());
 }
 
 void report() {
@@ -107,6 +176,34 @@ void report() {
     last_err = n_errors;
     last_ms = millis();
 }
+
+void motor_begin(int pwm_pin, int duty) {
+    pwm = pwm_pin;
+    duty_pct = duty;
+    apply_pwm();
+}
+
+bool set_duty(int duty) {
+    if (pwm < 0) return false;
+    duty_pct = duty;
+    apply_pwm();
+    return true;
+}
+
+bool set_motor(bool on) {
+    if (pwm < 0) return false;
+    run = on;
+    apply_pwm();
+    return true;
+}
+
+int pwm_pin() { return pwm; }
+int duty() { return duty_pct; }
+bool motor_on() { return run; }
+float scan_hz() { return frame_age_ms() > 500 ? 0.0f : speed_dps / 360.0f; }
+uint32_t frames() { return n_frames; }
+uint32_t crc_errors() { return n_crc; }
+uint32_t frame_age_ms() { return n_frames ? millis() - last_frame_ms : UINT32_MAX; }
 
 void pause() { paused = true; }
 bool on() { return forwarding; }

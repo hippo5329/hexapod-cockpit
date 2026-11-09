@@ -18,8 +18,10 @@
 //   /control?ps=0|1|2|kick   Wi-Fi power save now (not kept): 0 none (the boot's), 1 min modem, 2 max modem;
 //                            kick: 1 then 0, so the AP hears the station is awake (see ps_kick); /status reset:
 //                            why the board last restarted (esp_reset_reason)
-//   /control?lidar_rx=<gpio|-1>&lidar_ip=<a.b.c.d>&lidar_port=<p>&lidar_baud=<b>: the LiDAR forwarder
-//                            (lidar_fwd.h), any of them, kept, reboots
+//   /control?lidar_rx=<gpio|-1>&lidar_ip=<a.b.c.d>&lidar_port=<p>&lidar_baud=<b>&lidar_pwm=<gpio|-1>: the LiDAR
+//                            forwarder and its motor's pin (lidar_fwd.h), any of them, kept, reboots
+//   /control?lidar_duty=<0-100|auto>  the LiDAR motor's PWM duty, %, or auto (its own 10 Hz), at once, kept
+//   /control?lidar_motor=0|1  stop / run the LiDAR's motor now (not kept: every boot runs it)
 //
 // Settings in NVS namespace `hexacam` (tools/make_cam_nvs.py): ssid, psk (the robot's network), ota_pw
 // (OTA on 3232, none: no OTA), name (hostname, default hexacam), frame (qqvga, qvga, vga, svga, xga, hd;
@@ -27,7 +29,8 @@
 // hmirror (1: flip the image for the mount), xclk (the sensor clock, MHz, 5-24; default 12), tx_dbm,
 // wbuf (1: Wi-Fi buffers in internal RAM, wifi_mem.h; default 1), syslog_ip,
 // syslog_port (the robot firmware's syslog), uart (the link to the robot, below; default echo),
-// lidar_rx, lidar_ip, lidar_port, lidar_baud (the LiDAR forwarder, lidar_fwd.h; off without lidar_rx and lidar_ip).
+// lidar_rx, lidar_ip, lidar_port, lidar_baud (the LiDAR forwarder, lidar_fwd.h; off without lidar_rx and lidar_ip),
+// lidar_pwm, lidar_duty (its motor, lidar_fwd.h).
 //
 // The robot's UART: UART1, RX GPIO1 <- the robot's GPIO32, TX GPIO2 -> its GPIO33, 1.5 Mbaud 8N1
 // (wired 2026-11-07). NVS `uart`: echo (every byte sent back: the robot's console `uart` test checks
@@ -84,6 +87,7 @@ int lidar_rx = -1;
 IPAddress lidar_ip;
 uint16_t lidar_port = 8889;
 uint32_t lidar_baud = 230400;
+int lidar_pwm = -1, lidar_duty = -1;  // -1: no pin / auto (the LiDAR's own speed control)
 volatile uint32_t uart_bytes = 0;
 // The driver's receive errors (onReceiveError): where the robot's test loses bytes, if here.
 volatile uint32_t uart_err_ovf = 0, uart_err_full = 0, uart_err_frame = 0;
@@ -161,6 +165,9 @@ void load_settings() {
     if (!lidar_ip.fromString(prefs.getString("lidar_ip", ""))) lidar_ip = IPAddress(0, 0, 0, 0);
     lidar_port = constrain(prefs.getString("lidar_port", "8889").toInt(), 1, 65535);
     lidar_baud = constrain(prefs.getString("lidar_baud", "230400").toInt(), 9600, 2000000);
+    lidar_pwm = constrain(prefs.getString("lidar_pwm", "-1").toInt(), -1, 48);
+    const String d = prefs.getString("lidar_duty", "auto");
+    lidar_duty = d == "auto" ? -1 : constrain(d.toInt(), 0, 100);
 }
 
 void apply_tx_power() { esp_wifi_set_max_tx_power(static_cast<int8_t>(tx_dbm * 4)); }
@@ -297,7 +304,7 @@ esp_err_t capture_handler(httpd_req_t* req) {
 float measured_fps = 0, measured_kbps = 0;
 
 esp_err_t status_handler(httpd_req_t* req) {
-    char j[1280];
+    char j[1600];
     sensor_t* s = cam_ok ? esp_camera_sensor_get() : nullptr;
     wifi_ps_type_t ps = WIFI_PS_NONE;
     esp_wifi_get_ps(&ps);
@@ -309,7 +316,9 @@ esp_err_t status_handler(httpd_req_t* req) {
              "\"rssi\":%d,\"uptime_s\":%u,\"heap\":%u,\"psram_free\":%u,\"wifi_ps\":%d,"
              "\"tx_dbm\":%.2f,\"channel\":%d,\"xclk_mhz\":%d,\"capture\":%d,\"ssid\":\"%s\",\"wifi_trial\":%d,"
              "\"wbuf\":\"%s\",\"wbuf_internal\":%u,\"wbuf_psram\":%u,\"heap_min\":%u,\"uart\":\"%s\",\"uart_bytes\":%u,\"uart_err\":[%u,%u,%u],"
-             "\"lidar_rx\":%d,\"lidar_ip\":\"%s\",\"lidar_port\":%u,\"lidar_bytes\":%u,\"lidar_packets\":%u,\"lidar_err\":%u,\"reset\":\"%s\"}",
+             "\"lidar_rx\":%d,\"lidar_ip\":\"%s\",\"lidar_port\":%u,\"lidar_bytes\":%u,\"lidar_packets\":%u,\"lidar_err\":%u,"
+             "\"lidar_pwm\":%d,\"lidar_duty\":%d,\"lidar_motor\":%d,\"lidar_hz\":%.2f,\"lidar_frames\":%u,\"lidar_crc\":%u,"
+             "\"lidar_age_ms\":%d,\"reset\":\"%s\"}",
              name.c_str(), sensor_name, frame_name(s ? static_cast<framesize_t>(s->status.framesize) : frame), quality,
              fps, measured_fps, measured_kbps, static_cast<unsigned>(stream_clients),
              static_cast<unsigned>(frames_sent), static_cast<unsigned>(capture_fails), vflip, hmirror,
@@ -322,7 +331,10 @@ esp_err_t status_handler(httpd_req_t* req) {
              static_cast<unsigned>(uart_bytes), static_cast<unsigned>(uart_err_ovf), static_cast<unsigned>(uart_err_full),
              static_cast<unsigned>(uart_err_frame), lidar_rx, lidar_ip.toString().c_str(), static_cast<unsigned>(lidar_port),
              static_cast<unsigned>(lidar_fwd::bytes()), static_cast<unsigned>(lidar_fwd::packets()),
-             static_cast<unsigned>(lidar_fwd::errors()), reset_name(esp_reset_reason()));
+             static_cast<unsigned>(lidar_fwd::errors()), lidar_fwd::pwm_pin(), lidar_fwd::duty(), lidar_fwd::motor_on(),
+             lidar_fwd::scan_hz(), static_cast<unsigned>(lidar_fwd::frames()), static_cast<unsigned>(lidar_fwd::crc_errors()),
+             lidar_fwd::frame_age_ms() == UINT32_MAX ? -1 : static_cast<int>(lidar_fwd::frame_age_ms()),
+             reset_name(esp_reset_reason()));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, j, HTTPD_RESP_USE_STRLEN);
 }
@@ -355,28 +367,60 @@ esp_err_t control_handler(httpd_req_t* req) {
     float new_tx = 0;
     const Frame* new_frame = nullptr;
     if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
+        // The LiDAR motor, at once: lidar_duty (kept), lidar_motor (not kept). On their own.
+        char dv[8] = {}, mv[4] = {};
+        const bool dgiven = httpd_query_key_value(q, "lidar_duty", dv, sizeof dv) == ESP_OK;
+        const bool mgiven = httpd_query_key_value(q, "lidar_motor", mv, sizeof mv) == ESP_OK;
+        if (dgiven || mgiven) {
+            char* end = nullptr;
+            const long d = dgiven && strcmp(dv, "auto") ? strtol(dv, &end, 10) : -1;
+            if ((dgiven && strcmp(dv, "auto") && (end == dv || *end || d < 0 || d > 100)) ||
+                (mgiven && strcmp(mv, "0") && strcmp(mv, "1"))) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "lidar_duty takes 0-100 or auto, lidar_motor 0 or 1");
+                return ESP_FAIL;
+            }
+            if (lidar_fwd::pwm_pin() < 0) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no lidar_pwm pin set");
+                return ESP_FAIL;
+            }
+            if (dgiven) {
+                lidar_duty = static_cast<int>(d);
+                lidar_fwd::set_duty(lidar_duty);
+                Preferences w;
+                w.begin("hexacam", false);
+                w.putString("lidar_duty", lidar_duty < 0 ? String("auto") : String(lidar_duty));
+                w.end();
+            }
+            if (mgiven) lidar_fwd::set_motor(mv[0] == '1');
+            hexa_log::log(hexa_log::kNotice, "control: lidar motor %s, duty %s%s", lidar_fwd::motor_on() ? "run" : "stop",
+                          lidar_duty < 0 ? "auto" : String(lidar_duty).c_str(), dgiven ? " (kept)" : "");
+            return status_handler(req);
+        }
         // The LiDAR forwarder's settings: on their own, kept, and a reboot applies them.
-        const char* const lkeys[] = {"lidar_rx", "lidar_ip", "lidar_port", "lidar_baud"};
-        char lv[4][20] = {};
+        const char* const lkeys[] = {"lidar_rx", "lidar_ip", "lidar_port", "lidar_baud", "lidar_pwm"};
+        constexpr int kL = sizeof lkeys / sizeof *lkeys;
+        char lv[kL][20] = {};
         bool lany = false;
-        for (int i = 0; i < 4; i++) lany |= httpd_query_key_value(q, lkeys[i], lv[i], sizeof lv[i]) == ESP_OK;
+        for (int i = 0; i < kL; i++) lany |= httpd_query_key_value(q, lkeys[i], lv[i], sizeof lv[i]) == ESP_OK;
         if (lany) {
             IPAddress ip;
             const bool ok = (!lv[0][0] || (atoi(lv[0]) >= -1 && atoi(lv[0]) <= 48)) && (!lv[1][0] || ip.fromString(lv[1])) &&
                             (!lv[2][0] || (atoi(lv[2]) >= 1 && atoi(lv[2]) <= 65535)) &&
-                            (!lv[3][0] || (atoi(lv[3]) >= 9600 && atoi(lv[3]) <= 2000000));
+                            (!lv[3][0] || (atoi(lv[3]) >= 9600 && atoi(lv[3]) <= 2000000)) &&
+                            (!lv[4][0] || (atoi(lv[4]) >= -1 && atoi(lv[4]) <= 48));
             if (!ok) {
                 httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                                    "lidar_rx -1..48, lidar_ip a.b.c.d, lidar_port 1-65535, lidar_baud 9600-2000000");
+                                    "lidar_rx -1..48, lidar_ip a.b.c.d, lidar_port 1-65535, lidar_baud 9600-2000000, lidar_pwm -1..48");
                 return ESP_FAIL;
             }
             Preferences w;
             w.begin("hexacam", false);
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < kL; i++)
                 if (lv[i][0]) w.putString(lkeys[i], lv[i]);
             w.end();
-            hexa_log::log(hexa_log::kNotice, "control: lidar rx %s ip %s port %s baud %s (kept), rebooting",
-                          lv[0][0] ? lv[0] : "-", lv[1][0] ? lv[1] : "-", lv[2][0] ? lv[2] : "-", lv[3][0] ? lv[3] : "-");
+            hexa_log::log(hexa_log::kNotice, "control: lidar rx %s ip %s port %s baud %s pwm %s (kept), rebooting",
+                          lv[0][0] ? lv[0] : "-", lv[1][0] ? lv[1] : "-", lv[2][0] ? lv[2] : "-", lv[3][0] ? lv[3] : "-",
+                          lv[4][0] ? lv[4] : "-");
             const esp_err_t r = status_handler(req);
             restart_at = millis() + 500;
             return r;
@@ -463,7 +507,8 @@ esp_err_t control_handler(httpd_req_t* req) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                             "usage: /control?vflip=0|1&hmirror=0|1&fps=1-30&tx=2-20&xclk=5-24&capture=0|1&wbuf=0|1&frame=<size>"
                             "&ps=0|1|2|kick&boot_capture=0|1"
-                            " or lidar_rx=..&lidar_ip=..&lidar_port=..&lidar_baud=..");
+                            " or lidar_rx=..&lidar_ip=..&lidar_port=..&lidar_baud=..&lidar_pwm=.."
+                            " or lidar_duty=0-100|auto&lidar_motor=0|1");
         return ESP_FAIL;
     }
     Preferences w;
@@ -719,6 +764,7 @@ void setup() {
     WiFi.begin(ssid.c_str(), psk.c_str());
     apply_tx_power();
     lidar_fwd::begin(lidar_rx, lidar_ip, lidar_port, lidar_baud);  // settings only; started once the network is up
+    lidar_fwd::motor_begin(lidar_pwm, lidar_duty);  // the motor runs from the boot: released, or at lidar_duty
     hexa_log::log(hexa_log::kNotice, "boot: hexacam %s %s (reset: %s), sensor %s, frame %s, quality %d, fps %d%s%s, wifi buffers in %s", __DATE__,
                   __TIME__, reset_name(esp_reset_reason()), cam_ok ? sensor_name : "FAILED", frame_name(frame), quality, fps, vflip ? ", vflip" : "",
                   hmirror ? ", hmirror" : "", wifi_mem::internal_first ? "internal RAM" : "PSRAM");
@@ -773,7 +819,7 @@ void loop() {
         measured_kbps = (bytes_sent - b0) * 8 / 1000.0f / dt;
         f0 = frames_sent;
         b0 = bytes_sent;
-        hexa_log::log(hexa_log::kInfo, "health: %s rssi %d dBm  stream %u client(s) %.1f fps %.0f kbit/s  fails %u  heap %u (min %u) psram %u  wbuf %u/%u  uart %s %u B err %u/%u/%u  lidar %u B %u pkt err %u  flash ops %u max %u us",
+        hexa_log::log(hexa_log::kInfo, "health: %s rssi %d dBm  stream %u client(s) %.1f fps %.0f kbit/s  fails %u  heap %u (min %u) psram %u  wbuf %u/%u  uart %s %u B err %u/%u/%u  lidar %u B %u pkt err %u %.1f Hz  flash ops %u max %u us",
                       up ? "up" : "DOWN", static_cast<int>(WiFi.RSSI()), static_cast<unsigned>(stream_clients),
                       measured_fps, measured_kbps, static_cast<unsigned>(capture_fails),
                       static_cast<unsigned>(ESP.getFreeHeap()),
@@ -782,7 +828,7 @@ void loop() {
                       static_cast<unsigned>(wifi_mem::to_psram), uart_mode.c_str(), static_cast<unsigned>(uart_bytes),
                       static_cast<unsigned>(uart_err_ovf), static_cast<unsigned>(uart_err_full),
                       static_cast<unsigned>(uart_err_frame), static_cast<unsigned>(lidar_fwd::bytes()),
-                      static_cast<unsigned>(lidar_fwd::packets()), static_cast<unsigned>(lidar_fwd::errors()),
+                      static_cast<unsigned>(lidar_fwd::packets()), static_cast<unsigned>(lidar_fwd::errors()), lidar_fwd::scan_hz(),
                       static_cast<unsigned>(irq_watch::flash_ops()),
                       static_cast<unsigned>(irq_watch::flash_max_us()));
     }

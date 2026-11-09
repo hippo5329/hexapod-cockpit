@@ -9,6 +9,14 @@
 //   lidar_ip    the robot computer (the ldlidar node's host); none: off
 //   lidar_port  its UDP port (default 8889, cockpit's lidar.udp_port)
 //   lidar_baud  default 230400 (LD19)
+//
+// The motor: an LD19's PWM input (20-50 kHz; floating or low, the LiDAR keeps its own 10 Hz) on a GPIO
+// of this board, LEDC channel 2 = timer 1 (the camera's XCLK holds timer 0, channel 0):
+//   lidar_pwm   the GPIO wired to the LiDAR's PWM; -1 (default): none, kept, reboots
+//   lidar_duty  the PWM duty, % (0-100), or `auto` (default): the pin released, the LiDAR's own speed
+//               control; applied at once, kept
+// and /control?lidar_motor=0|1 stops it / runs it at lidar_duty now (not kept: every boot runs it). The
+// scan rate is read back from the packets: each LD19 packet carries the motor's speed, deg/s.
 #pragma once
 #include <Arduino.h>
 #include <IPAddress.h>
@@ -26,4 +34,16 @@ bool on();
 uint32_t bytes();     // received from the LiDAR, since boot
 uint32_t packets();   // datagrams sent
 uint32_t errors();    // the driver's receive errors (onReceiveError)
+
+// The motor (above): at boot, before the network.
+void motor_begin(int pwm_pin, int duty_pct);  // duty -1: released (auto)
+bool set_duty(int duty_pct);                  // -1 auto; false without a pin
+bool set_motor(bool run);                     // false without a pin
+int pwm_pin();
+int duty();                                   // the setting, -1 auto
+bool motor_on();
+float scan_hz();          // the motor's speed from the last good packet / 360; 0 when none came for 500 ms
+uint32_t frames();        // good LD19 packets (CRC passed)
+uint32_t crc_errors();    // packets with a bad CRC
+uint32_t frame_age_ms();  // since the last good packet; UINT32_MAX when none yet
 }  // namespace lidar_fwd
