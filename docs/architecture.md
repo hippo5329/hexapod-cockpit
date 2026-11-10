@@ -35,15 +35,16 @@ No encoders: `/odom/gait` is dead reckoning from commanded steps and will slip. 
 `hexapod_bringup`) fuses its twist with the gyro's yaw rate, so the heading follows the gyro and not the slipping
 feet; position stays the gait's. Standing, the board takes the gyro's bias out and the gait declares its zero
 exact, so the heading holds. The QMI8658A has no magnetometer, so yaw has no absolute anchor; long runs need SLAM's scan
-matching, and the Standard Kit has no LiDAR. Nav2 is therefore phase 3 and needs a range sensor added.
+matching, and the Standard Kit has no LiDAR: an LD19 is added, its data forwarded by the camera board
+([navigation.md](navigation.md)).
 
 ## Phases
 
 1. **Bring-up**: identify the board (questions in `hardware-minihexa.md`), save the vendor trims, flash our
    firmware, stand, move each joint, read IMU and range on their topics.
 2. **Walk**: tripod gait from `/cmd_vel`, teleop from the web UI, gait odometry measured against the floor.
-3. **Map**: add a LiDAR (an LD19 is the cockpit's default) or the camera, then SLAM and Nav2 with a legged
-   footprint and slow limits.
+3. **Map**: an LD19 on the camera board, then SLAM, Nav2 and exploration with a legged footprint
+   ([navigation.md](navigation.md)): running on the robot.
 4. **Simulation**: a simulated controller that walks with the same gait code and the real robot's slip.
 
 ## Reused from linorobot2-cockpit

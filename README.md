@@ -20,6 +20,11 @@ What runs today:
   gyro's yaw rate into `/odom` and the `odom` → `base_footprint` TF, so RViz shows the robot walking across the
   floor. Run it with `ros2 launch hexapod_bringup view_robot.launch.py`
   beside a micro-ROS agent.
+- **LiDAR, SLAM, Nav2 and exploration** ([`docs/navigation.md`](docs/navigation.md)): an LD19 forwarded over Wi-Fi
+  by the camera board, and linorobot2-cockpit's slam_toolbox, Nav2 (MPPI Omni) and explore_lite with this robot's
+  config. On the robot it has explored about 135 m² in 33 min and walked home within a few centimetres.
+- **Camera and vision** ([`docs/camera.md`](docs/camera.md)): the camera board's stream, a ROS bridge, object
+  detection and monocular depth, and a survey of the objects seen while exploring.
 - **Simulator node** (`ros/hexapod_sim`): the host simulator in place of the firmware, with ground truth and
   the simulated IMU and ultrasonic in a walled room. Run it with `ros2 launch hexapod_sim sim.launch.py`: no
   board needed.

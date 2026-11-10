@@ -1,6 +1,6 @@
 # Camera
 
-The miniHexa's camera is a separate board: an ESP32-S3-CAM (ESP32-S3-WROOM N16R8: 16 MB flash, 8 MB octal
+The miniHexa's camera is a separate board, which also forwards the LD19 LiDAR's data ([navigation.md](navigation.md)): an ESP32-S3-CAM (ESP32-S3-WROOM N16R8: 16 MB flash, 8 MB octal
 PSRAM; OV3660 sensor) on its own 5 V supply, joining the robot's Wi-Fi. It only captures and sends JPEG
 frames; everything else happens on the host, where `camera_bridge` turns them into ROS images.
 
@@ -137,11 +137,15 @@ CC-BY-NC-4.0, for non-commercial use only**, so the default stays Small.
 `ros2 run hexapod_bringup object_survey --ros-args -p note_prefix:=<path> [-p rooms_file:=<rooms.json> -p home_pose:=x,y,yaw_deg]`
 
 The camera sees about 58 degrees, straight ahead, and while exploring it mostly sees what the frontiers point at.
-So every 1.5 m of travel, and once after the start, the survey looks around:
+So every 2 m of travel (`survey_every_m`), and once after the start, the survey looks around. A due survey waits
+for open space by the LiDAR: the nearest return 0.45 m or more (`open_min_m`) and half of eight sectors 0.9 m or
+more (`open_median_m`). It is skipped after 2 m without it (`postpone_m`), or within 1.2 m of an earlier survey
+(`revisit_m`): in doorways and beside furniture the turns were refused and the survey sat there.
 
 1. It pauses the explorer: `explore/resume` false cancels its goal.
 2. It turns a full circle in eight 45-degree steps with Nav2's Spin behaviour, which checks the costmap for room to turn.
-3. At each heading it stands still for 2 s while `camera_vision` labels the frame.
+3. At each heading it settles for 0.6 s (`settle_s`), then stands still for 1.5 s (`dwell_s`) while `camera_vision`
+   labels the frame.
 4. It resumes the explorer, facing the way it was going.
 
 Labels seen while walking count too. Each sighting within 2 m goes on the map through TF at the frame's stamp
