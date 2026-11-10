@@ -28,8 +28,8 @@ static void test_good_blob_gives_its_keys() {
     std::vector<Setting> s;
     std::string why;
     TEST_ASSERT_TRUE(parse("# robot settings\nimu_level=3.41,-3.86\n\nidle_s = 60\r\n"
-                           "trims=0,5,-10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,200\nsim=0\napp=base\nlow_bat_mv=6400\nsyslog_ip=10.72.1.1\nsyslog_port=5140\nyaw_hold=1.5\ntilt_hold=1.5\n"
-                           "agent=10.72.1.1\nport=8888\nlink=wifi\nssid=net\npsk=12345678\nota_pw=x\n",
+                           "trims=0,5,-10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,200\nsim=0\napp=base\nlow_bat_mv=6400\nsyslog_ip=192.168.4.1\nsyslog_port=5140\nyaw_hold=1.5\ntilt_hold=1.5\n"
+                           "agent=192.168.4.1\nport=8888\nlink=wifi\nssid=net\npsk=12345678\nota_pw=x\n",
                            &s, &why));
     TEST_ASSERT_EQUAL(16, s.size());
     TEST_ASSERT_EQUAL_STRING("imu_level", s[0].key.c_str());
@@ -68,7 +68,7 @@ static void test_bad_values_refuse_the_whole_blob() {
     TEST_ASSERT_TRUE(refused("com=31,0\n"));
     TEST_ASSERT_TRUE(refused("com=5\n"));
     TEST_ASSERT_TRUE(refused("yaw_hold=5.5\n"));
-    TEST_ASSERT_TRUE(refused("syslog_ip=10.72.1\n"));
+    TEST_ASSERT_TRUE(refused("syslog_ip=192.168.4\n"));
     TEST_ASSERT_TRUE(refused("syslog_port=0\n"));
     TEST_ASSERT_TRUE(refused("low_bat_mv=5599\n"));
     TEST_ASSERT_TRUE(refused("low_bat_mv=8001\n"));
@@ -76,8 +76,8 @@ static void test_bad_values_refuse_the_whole_blob() {
     TEST_ASSERT_TRUE(refused("trims=0,0,0\n"));
     TEST_ASSERT_TRUE(refused("trims=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,201\n"));
     TEST_ASSERT_TRUE(refused("port=0\n"));
-    TEST_ASSERT_TRUE(refused("agent=10.72.1.256\n"));
-    TEST_ASSERT_TRUE(refused("agent=10.72.1\n"));
+    TEST_ASSERT_TRUE(refused("agent=192.168.4.256\n"));
+    TEST_ASSERT_TRUE(refused("agent=192.168.4\n"));
     TEST_ASSERT_TRUE(refused("psk=short\n"));
     TEST_ASSERT_TRUE(refused("ssid=123456789012345678901234567890123\n"));
     TEST_ASSERT_TRUE(refused("app=web\n"));
