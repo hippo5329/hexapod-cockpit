@@ -25,6 +25,7 @@ its firmware is not for this board.
 | servos | not on ESP32 pins: a servo controller on the board takes frames on a UART (230400 baud, ESP32 RX 16 / TX 17) and makes the 18 pulses; 500-2500 µs over 280° ([firmware.md](firmware.md), Servos). Each moves alone on its id (measured, two cameras) |
 | I2C | SDA 22, SCL 23, **100 kHz** (the ultrasonic does not answer at 400 kHz, measured); QMI8658 at 0x6A, ultrasonic at 0x77, battery monitor at 0x46, and an unidentified device at 0x7E |
 | IMU | QMI8658, WHO_AM_I 5; at rest gravity 9.81 m/s² on +z, gyro noise ~0.001 rad/s at 50 Hz; a counter-clockwise turn reads positive on z (measured) |
+| camera (added) | a GOOUUU ESP32-S3-CAM (N16R8, OV3660) on its own 5 V supply, on the robot's Wi-Fi: video, and the LD19's data ([camera.md](camera.md)) |
 | LiDAR (added) | an LD19 on top, its TX into the camera board's GPIO 14, forwarded over Wi-Fi; `laser_link` 0.005 m behind the body centre, 0.145 m above the underside ([navigation.md](navigation.md)) |
 | range | Hiwonder's I2C ultrasonic module: it times its own echo and returns millimetres in register 0 (no trigger or echo pin); steady to about ±15 mm (measured) |
 | battery | the board's I2C monitor at 0x46 returns millivolts; GPIO33 has no divider on this board. 2S pack: 7.8 V at rest after delivery, ~0.25 V per 20 min standing on the floor (measured) |

@@ -1,6 +1,6 @@
 # Camera
 
-The miniHexa's camera is a separate board, which also forwards the LD19 LiDAR's data ([navigation.md](navigation.md)): an ESP32-S3-CAM (ESP32-S3-WROOM N16R8: 16 MB flash, 8 MB octal
+The miniHexa's camera is a separate board, which also forwards the LD19 LiDAR's data ([navigation.md](navigation.md)): a GOOUUU ESP32-S3-CAM (ESP32-S3-WROOM N16R8: 16 MB flash, 8 MB octal
 PSRAM; OV3660 sensor) on its own 5 V supply, joining the robot's Wi-Fi. It only captures and sends JPEG
 frames; everything else happens on the host, where `camera_bridge` turns them into ROS images.
 
